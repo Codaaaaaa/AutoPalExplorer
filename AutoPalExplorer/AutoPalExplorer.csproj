@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Dalamud.NET.Sdk/13.0">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0-windows7.0</TargetFramework>
+    <RootNamespace>AutoPalExplorer</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PlatformTarget>x64</PlatformTarget>
+
+    <!-- 输出目录直接是 bin/Release/AutoPalExplorer.dll，方便 Dalamud & Packager -->
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="ECommons">
+      <HintPath>C:\Users\czy29\AppData\Roaming\XIVLauncherCN\installedPlugins\ICE\0.0.0.636\ECommons.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Lumina">
+      <HintPath>C:\Users\czy29\AppData\Roaming\XIVLauncherCN\addon\Hooks\dev\Lumina.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Lumina.Excel">
+      <HintPath>C:\Users\czy29\AppData\Roaming\XIVLauncherCN\installedPlugins\ICE\0.0.0.636\Lumina.Excel.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 确保插件 json 跟着 DLL 一起到输出目录 -->
+    <None Update="AutoPalExplorer.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\logo.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Visible>false</Visible>
+    </Content>
+  </ItemGroup>
+</Project>

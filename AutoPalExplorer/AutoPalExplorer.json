@@ -1,0 +1,14 @@
+{
+  "Name": "AutoPalExplorer",
+  "InternalName": "AutoPalExplorer",
+  "Author": "Codaaaaaa",
+  "Punchline": "人人没挂开",
+  "Description": "人人有挂开",
+  "ApplicableVersion": "any",
+  "IconUrl": "logo.png",
+  "Tags": [
+    "utility",
+    "deepdungeon",
+    "navigation"
+  ]
+}

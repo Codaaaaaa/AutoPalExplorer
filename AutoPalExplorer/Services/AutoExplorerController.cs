@@ -28,17 +28,18 @@ public sealed class AutoPalController
 
     private bool bmraiOn;
     private uint lastTerritoryType;
-
-    private const float ExitStopRadius = 1.0f;
-    private const float ChestDoneRadius = 2.0f;
-    private const float BuriedChestDoneRadius = 1.0f;
-    private const float InactiveExitNearRadius = 6.0f;
-    private const float EnemySearchRadius = 500.0f;
-
-    private const float TrapAvoidRadius = 1.5f;
-
+    private bool hasOpenBurinedChest = false;
     private DateTime lastChestInteractAt = DateTime.MinValue;
-    private const int ChestInteractIntervalMs = 500;
+    private float ExitStopRadius => MathF.Max(0.1f, config.ExitStopRadius);
+    private float ChestDoneRadius => MathF.Max(0.1f, config.ChestDoneRadius);
+    private float BuriedChestDoneRadius => MathF.Max(0.1f, config.BuriedChestDoneRadius);
+    private bool isBossFloor;
+    private bool isBossFloorQueueing;
+    private double ChallengeIntervalSeconds => MathF.Max(1.0f, config.ChallengeIntervalSeconds);
+    private DateTime nextChallengeAttemptAt = DateTime.MinValue;
+    private float EnemySearchRadius => MathF.Max(1.0f, config.EnemySearchRadius);
+    private float TrapAvoidRadiusCfg => MathF.Max(0.1f, config.TrapAvoidRadius);
+    private int ChestInteractIntervalMs => Math.Max(50, config.ChestInteractIntervalMs);
     private bool nextLevelBool = false;
 
     public AutoPalController(
@@ -84,6 +85,7 @@ public sealed class AutoPalController
         exitDetector.Reset();
         navigator.Stop();
         EnsureBmraiOff();
+        isBossFloor = false;
 
         if (config.devMode)
             log.Information("[AutoPalExplorer] 已启动，当前地城 Territory={TerritoryType}。", clientState.TerritoryType);
@@ -116,11 +118,37 @@ public sealed class AutoPalController
             log.Information("[AutoPalExplorer] 收到传送装置激活通知。");
     }
 
+    public void NotifyBuriedtActivated()
+    {
+        hasOpenBurinedChest = true;
+        if (config.devMode)
+            log.Information("[AutoPalExplorer] 收到埋藏的宝藏通知。");
+    }
     public void nextLevelActivated()
     {
         nextLevelBool = true;
         if (config.devMode)
             log.Information("[AutoPalExplorer] 标记换层（nextLevelActivated）。");
+    }
+    public void NotifyBossFloor()
+    {
+        isBossFloor = true;
+        isBossFloorQueueing = false;
+        nextChallengeAttemptAt = DateTime.MinValue;
+
+        if (config.devMode)
+            log.Information("[AutoPalExplorer] 检测到 Boss 层聊天提示，启用 Boss 房逻辑。");
+    }
+
+    public void NotifyChallengeRequestSent()
+    {
+        // 收到“成功发送了参加申请”，说明排队申请已发出，可以退出 Boss 流程
+        isBossFloor = false;
+        isBossFloorQueueing = false;
+        nextChallengeAttemptAt = DateTime.MinValue;
+
+        if (config.devMode)
+            log.Information("[AutoPalExplorer] 收到成功发送参加申请提示，结束 Boss 流程逻辑。");
     }
 
     public void Update()
@@ -161,6 +189,8 @@ public sealed class AutoPalController
             wallFollower.Reset();
             exitDetector.Reset();
             navigator.Stop();
+            // isBossFloor = false;
+            hasOpenBurinedChest = false;
             EnsureBmraiOff();
 
             if (config.devMode)
@@ -193,6 +223,20 @@ public sealed class AutoPalController
             }
         }
 
+        // 1.1 是否进入boss房间
+        if (isBossFloor && !isBossFloorQueueing)
+        {
+            if (HandleBossFloor(pos))
+                return; // 已经处理了（找 Boss 或找出口），不走下面普通逻辑
+        }
+
+        // 1.2 已从Boss房传送出，正在处理“挑战下一朝圣路”
+        if (isBossFloor && isBossFloorQueueing)
+        {
+            if (HandleBossFloorQueueing(pos))
+                return; // 队列逻辑接管
+        }
+
         // 2. 更新导航 & 目标检测
         navigator.Update();
         exitDetector.Update(pos);
@@ -208,8 +252,8 @@ public sealed class AutoPalController
 
         // 3. 优先级决策
         // ==== 3.0 埋藏的宝藏（最高优先级） ====
-        var buried = FindNearestBuriedChest(pos, 60f);
-        if (buried is not null)
+        var buried = FindNearestBuriedChest(pos, 500f);
+        if (buried is not null && !hasOpenBurinedChest)
         {
             var dxB = buried.Position.X - pos.X;
             var dzB = buried.Position.Z - pos.Z;
@@ -243,7 +287,7 @@ public sealed class AutoPalController
                 if (config.devMode)
                     log.Information("[AutoPalExplorer] 导航至埋藏的宝藏。");
 
-                TrySafeMoveTo(buried.Position);
+                TrySafeMoveTo(buried.Position, TrapAvoidRadiusCfg);
             }
             else if (config.devMode)
             {
@@ -334,121 +378,35 @@ public sealed class AutoPalController
             return;
         }
 
-        // ==== 3.3 未激活传送装置 ====
-        // if (exitDetector.HasInactiveExit && exitDetector.Exit is { } inactiveExit)
-        // {
-        //     var dx = inactiveExit.Position.X - pos.X;
-        //     var dz = inactiveExit.Position.Z - pos.Z;
-        //     var distSq = dx * dx + dz * dz;
-
-        //     if (config.devMode)
-        //         log.Information("[AutoPalExplorer] 检测到未激活传送装置，距离={Dist:0.00}。",
-        //             MathF.Sqrt(distSq));
-
-        //     var needNewTarget = !navigator.IsBusy || IsDifferentTarget(currentTarget, inactiveExit.Position, 1.0f);
-
-        //     if (needNewTarget)
-        //     {
-        //         if (distSq > InactiveExitNearRadius * InactiveExitNearRadius)
-        //         {
-        //             if (config.devMode)
-        //                 log.Information("[AutoPalExplorer] 未激活传送装置较远，先走过去观察。");
-        //             navigator.Stop();
-        //             navigator.TryMoveTo(inactiveExit.Position);
-        //             return;
-        //         }
-        //         else
-        //         {
-        //             if (config.devMode)
-        //                 log.Information("[AutoPalExplorer] 已在未激活传送装置附近，开始寻找最近敌人 (半径={R})。", EnemySearchRadius);
-
-        //             var enemy = FindNearestEnemy(pos, EnemySearchRadius);
-        //             if (enemy is not null)
-        //             {
-        //                 var ex = enemy.Position.X - pos.X;
-        //                 var ez = enemy.Position.Z - pos.Z;
-        //                 var edist = MathF.Sqrt(ex * ex + ez * ez);
-
-        //                 if (config.devMode)
-        //                     log.Information("[AutoPalExplorer] 找到最近敌人 Name={Name}, 距离={Dist:0.00}，导航过去。",
-        //                         enemy.Name.TextValue, edist);
-
-        //                 navigator.Stop();
-        //                 navigator.TryMoveTo(enemy.Position);
-        //                 return;
-        //             }
-        //             else
-        //             {
-        //                 if (config.devMode)
-        //                     log.Information("[AutoPalExplorer] 未激活门附近没有发现敌人，交给贴墙探索逻辑。");
-        //                 // 注意：这里不 return，让后面的 wallFollower 接管
-        //             }
-        //         }
-        //     }
-        //     else
-        //     {
-        //         if (config.devMode)
-        //             log.Information("[AutoPalExplorer] 正在朝未激活传送装置移动中，保持当前导航。");
-        //         // 保持现有导航，不中断，允许走完
-        //         // 不 return，允许下面逻辑在 navigator 不 busy 时接管
-        //     }
-        // }
-        // ==== 3.3 未激活传送装置 ====
-        if (exitDetector.HasInactiveExit && exitDetector.Exit is { } inactiveExit)
+        // ==== 3.3 查找最近怪物 ====
+        var enemy = FindNearestEnemy(pos, EnemySearchRadius);
+        if (enemy is not null)
         {
-            var dx = inactiveExit.Position.X - pos.X;
-            var dz = inactiveExit.Position.Z - pos.Z;
-            var distSq = dx * dx + dz * dz;
-            var dist = MathF.Sqrt(distSq);
+            var ex = enemy.Position.X - pos.X;
+            var ez = enemy.Position.Z - pos.Z;
+            var edist = MathF.Sqrt(ex * ex + ez * ez);
 
             if (config.devMode)
-                log.Information("[AutoPalExplorer] 检测到未激活传送装置，距离={Dist:0.00}。", dist);
+                log.Information("[AutoPalExplorer] 找到最近敌人 Name={Name}, 距离={Dist:0.00}，发送导航到敌人位置。",
+                    enemy.Name.TextValue, edist);
 
-            // ✅ 关键点：如果导航当前正在执行，就先别动，避免疯狂重下指令
-            if (navigator.IsBusy)
+            if (!navigator.IsBusy || IsDifferentTarget(currentTarget, enemy.Position, 1.0f))
             {
                 if (config.devMode)
-                    log.Information("[AutoPalExplorer] 未激活门逻辑：Navigator 正在移动，保持当前路径，不重复下达导航指令。");
-                // 这里直接 return，确保这一帧不去贴墙、不去重新寻路
-                return;
-            }
-
-            // ⬇️ 走到门附近（只在空闲时决定）
-            if (distSq > InactiveExitNearRadius * InactiveExitNearRadius)
-            {
-                if (config.devMode)
-                    log.Information("[AutoPalExplorer] 未激活门较远（>{R}），发送导航到门附近一次。", InactiveExitNearRadius);
-
-                navigator.Stop();
-                navigator.TryMoveTo(inactiveExit.Position);
-                return;
-            }
-
-            // ⬇️ 已经在门附近：尝试找怪
-            if (config.devMode)
-                log.Information("[AutoPalExplorer] 已在未激活门附近（<= {R}），开始寻找最近敌人 (半径={EnemyR})。",
-                    InactiveExitNearRadius, EnemySearchRadius);
-
-            var enemy = FindNearestEnemy(pos, EnemySearchRadius);
-            if (enemy is not null)
-            {
-                var ex = enemy.Position.X - pos.X;
-                var ez = enemy.Position.Z - pos.Z;
-                var edist = MathF.Sqrt(ex * ex + ez * ez);
-
-                if (config.devMode)
-                    log.Information("[AutoPalExplorer] 找到最近敌人 Name={Name}, 距离={Dist:0.00}，发送导航到敌人位置。",
-                        enemy.Name.TextValue, edist);
-
+                    log.Information("[AutoPalExplorer] 导航至已激活传送装置。");
                 navigator.Stop();
                 navigator.TryMoveTo(enemy.Position);
-                return;
             }
 
-            // ⬇️ 门附近也没怪：交给贴墙逻辑（不要 return，让下面的 wallFollower 分支接管）
-            if (config.devMode)
-                log.Information("[AutoPalExplorer] 未激活门附近没有敌人，交给贴墙探索逻辑。");
+            // navigator.Stop();
+            // navigator.TryMoveTo(enemy.Position);
+            return;
         }
+
+        // ⬇️ 门附近也没怪：交给贴墙逻辑（不要 return，让下面的 wallFollower 分支接管）
+        if (config.devMode)
+            log.Information("[AutoPalExplorer] 未激活门附近没有敌人，交给贴墙探索逻辑。");
+
 
         // ==== 3.4 没有更高优先级 & 当前没有在移动：靠墙探索 ====
         if (!navigator.IsBusy)
@@ -458,8 +416,8 @@ public sealed class AutoPalController
 
             if (!wallFollower.TryStep())
             {
-                log.Warning("[AutoPalExplorer] 无可探索路径，自动停止。");
-                Stop();
+                log.Warning("[AutoPalExplorer] 无可探索路径");
+                // Stop();
             }
             else
             {
@@ -609,6 +567,200 @@ public sealed class AutoPalController
     }
 
     /// <summary>
+    /// Boss 层逻辑：
+    /// - 如果还有敌人：视作 Boss，导航过去，接近后交给 BMRAI 输出。
+    /// - 如果没有敌人：寻找 BaseId=2005809 的出口，走过去并交互。
+    /// </summary>
+    private bool HandleBossFloor(Vector3 pos)
+    {
+        // 1) 尝试找到 Boss（这里直接用最近敌人即可）
+        var boss = FindNearestEnemy(pos, EnemySearchRadius);
+        if (boss is not null)
+        {
+            var dx = boss.Position.X - pos.X;
+            var dz = boss.Position.Z - pos.Z;
+            var distSq = dx * dx + dz * dz;
+            var dist = MathF.Sqrt(distSq);
+
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] [Boss层] 检测到 Boss Name={Name}, 距离={Dist:0.00}。",
+                    boss.Name.TextValue, dist);
+
+            // 距离较远：导航过去
+            if (!navigator.IsBusy || IsDifferentTarget(navigator.CurrentTarget, boss.Position, 1.0f))
+            {
+                navigator.Stop();
+                navigator.TryMoveTo(boss.Position);
+
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] [Boss层] 导航至 Boss。");
+            }
+
+            // 靠近 Boss 时提前开 BMRAI，方便自动输出
+            if (distSq <= 5.0f * 5.0f)
+            {
+                EnsureBmraiOn();
+            }
+
+            return true; // Boss 还活着，只做打 Boss 的逻辑
+        }
+
+        // 2) 没有敌人 -> 认为 Boss 已击破，前往出口 BaseId=2005809
+        var exitObj = FindObjectByBaseId(ObjectIds.BossExitBaseId);
+        if (exitObj is not null)
+        {
+            var ex = exitObj.Position.X - pos.X;
+            var ez = exitObj.Position.Z - pos.Z;
+            var distSq = ex * ex + ez * ez;
+            var dist = MathF.Sqrt(distSq);
+
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] [Boss层] 找到出口(2005809)，距离={Dist:0.00}。", dist);
+
+            if (distSq > ExitStopRadius * ExitStopRadius)
+            {
+                if (!navigator.IsBusy || IsDifferentTarget(navigator.CurrentTarget, exitObj.Position, 1.0f))
+                {
+                    navigator.Stop();
+                    navigator.TryMoveTo(exitObj.Position);
+
+                    if (config.devMode)
+                        log.Information("[AutoPalExplorer] [Boss层] 导航至出口(2005809)。");
+                }
+            }
+            else
+            {
+                // 已到出口旁边，尝试交互
+                TryInteractWithObject(exitObj, "Boss层出口");
+                // 可选：交互后清掉 Boss 标记，避免下一层误用
+                isBossFloorQueueing = true;
+                nextChallengeAttemptAt = DateTime.UtcNow.AddSeconds(ChallengeIntervalSeconds);
+
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] [Boss层] 已与 Boss 出口交互，进入挑战下一朝圣路流程。");
+            }
+
+            return true;
+        }
+
+        if (config.devMode)
+            log.Information("[AutoPalExplorer] [Boss层] 未找到 BaseId=2005809 出口物件，等待下一帧。");
+
+        return true; // 仍视为 Boss 层逻辑已接管（避免跑去贴墙乱逛）
+    }
+
+    /// <summary>
+    /// Boss 流程第二阶段：
+    /// - 在新房间寻找 BaseId=2014758。
+    /// - 靠近后交互弹出窗口。
+    /// - 每 10 秒尝试点击一次“挑战下一朝圣路”选项/按钮。
+    /// - 真正结束条件：收到聊天“成功发送了参加申请”，由 NotifyChallengeRequestSent() 重置状态。
+    /// </summary>
+    private bool HandleBossFloorQueueing(Vector3 pos)
+    {
+        var npc = FindObjectByBaseId(ObjectIds.NextPilgrimNpcBaseId);
+        if (npc is not null)
+        {
+            var dx = npc.Position.X - pos.X;
+            var dz = npc.Position.Z - pos.Z;
+            var distSq = dx * dx + dz * dz;
+            var dist = MathF.Sqrt(distSq);
+
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] [Boss层] [Queue] 找到挑战NPC/机关(2014758)，距离={Dist:0.00}。", dist);
+
+            if (distSq > ExitStopRadius * ExitStopRadius)
+            {
+                if (!navigator.IsBusy || IsDifferentTarget(navigator.CurrentTarget, npc.Position, 0.5f))
+                {
+                    navigator.Stop();
+                    navigator.TryMoveTo(npc.Position);
+
+                    if (config.devMode)
+                        log.Information("[AutoPalExplorer] [Boss层] [Queue] 导航至挑战NPC/机关(2014758)。");
+                }
+                return true;
+            }
+            else
+            {
+                // 到了身边就保证交互一次，弹出菜单/确认框
+                TryInteractWithObject(npc, "挑战下一朝圣路NPC");
+            }
+        }
+        else
+        {
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] [Boss层] [Queue] 未找到 2014758，等待下一帧。");
+        }
+
+        // 每隔一定时间尝试点“挑战下一朝圣路”
+        var now = DateTime.UtcNow;
+        if (now >= nextChallengeAttemptAt)
+        {
+            TryClickNextPilgrim();
+            nextChallengeAttemptAt = now.AddSeconds(ChallengeIntervalSeconds);
+        }
+
+        // 这里仍返回 true，让通用逻辑不要乱跑，直到 NotifyChallengeRequestSent 把 isBossFloor 清掉。
+        return true;
+    }
+
+    private unsafe void TryInteractWithObject(IGameObject obj, string purpose)
+    {
+        if (obj == null)
+        {
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] TryInteractWithObject({Purpose})：目标为 null。", purpose);
+            return;
+        }
+
+        if (!obj.IsTargetable)
+        {
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] TryInteractWithObject({Purpose})：目标不可交互，BaseId={BaseId}。", purpose, obj.BaseId);
+            return;
+        }
+
+        try
+        {
+            var ptr = (GameObject*)obj.Address;
+            if (ptr == null)
+            {
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] TryInteractWithObject({Purpose})：GameObject 指针为空。", purpose);
+                return;
+            }
+
+            var ts = TargetSystem.Instance();
+            if (ts == null)
+            {
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] TryInteractWithObject({Purpose})：TargetSystem 实例为空。", purpose);
+                return;
+            }
+
+            ts->InteractWithObject(ptr, false);
+
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] 已尝试与 {Purpose} 交互，BaseId={BaseId}。", purpose, obj.BaseId);
+        }
+        catch (Exception ex)
+        {
+            log.Warning($"[AutoPalExplorer] TryInteractWithObject({purpose}) 异常：{ex.Message}");
+        }
+    }
+
+    private IGameObject? FindObjectByBaseId(uint baseId)
+    {
+        foreach (var obj in objectTable)
+        {
+            if (obj.BaseId == baseId)
+                return obj;
+        }
+        return null;
+    }
+
+    /// <summary>
     /// 检查某个点附近是否有陷阱（EventObj + TrapIds）。
     /// 返回是否危险，以及最近陷阱的位置。
     /// </summary>
@@ -645,7 +797,7 @@ public sealed class AutoPalController
     /// <summary>
     /// 包一层导航：如果目标点太靠近陷阱，尝试往远离陷阱方向偏移；如果仍然不安全则放弃该移动。
     /// </summary>
-    private bool TrySafeMoveTo(Vector3 destination, float avoidRadius = TrapAvoidRadius)
+    private bool TrySafeMoveTo(Vector3 destination, float avoidRadius)
     {
         if (IsNearTrap(destination, avoidRadius, out var trapPos))
         {
@@ -728,6 +880,12 @@ public sealed class AutoPalController
             if (bc.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.BattleNpc)
                 continue;
 
+            if (bc is not IBattleNpc bn)
+                continue;
+
+            if (bn.BattleNpcKind != Dalamud.Game.ClientState.Objects.Enums.BattleNpcSubKind.Enemy)
+                continue;
+
             if (!bc.IsTargetable || bc.CurrentHp <= 0)
                 continue;
 
@@ -760,4 +918,23 @@ public sealed class AutoPalController
 
         return best;
     }
+
+    private unsafe void TryClickNextPilgrim()
+    {
+        try
+        {
+            // TODO: 根据实际 Addon 名称和文本调整：
+            // 下方只是示意写法（需要你替换成自己目前项目里用于点窗口按钮的那套工具函数）
+
+            // 示例：有一行写着 "挑战下一朝圣路"
+
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] [Boss层] [Queue] 尝试点击“挑战下一朝圣路”（具体实现请按实际Addon调整）。");
+        }
+        catch (Exception ex)
+        {
+            log.Warning($"[AutoPalExplorer] TryClickNextPilgrim 异常：{ex.Message}");
+        }
+    }
+
 }

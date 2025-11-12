@@ -48,16 +48,16 @@ public sealed class PomanderManager
         // 不想给你乱编。请你用自己现有的方法（如 Excel 表 / SaintCoinach / 已有插件）把 ID 补上。
 
         pomanders.Add(new PomanderEntry("魔陶器：咒印解除", ActionType.Action, "Safety", 1, 1u));
-        pomanders.Add(new PomanderEntry("魔陶器：全景", ActionType.Action, "Sight", 2, 1u));
-        pomanders.Add(new PomanderEntry("魔陶器：强化自身", ActionType.Action, "Strength", 2, 1u));
-        pomanders.Add(new PomanderEntry("魔陶器：强化防御", ActionType.Action, "Steel", 2, 1u));
-        pomanders.Add(new PomanderEntry("魔陶器：宝箱增加", ActionType.Action,    "Affluence",    2, 1u));
-        pomanders.Add(new PomanderEntry("魔陶器：减少敌人", ActionType.Action,    "Flight",    2, 1u));
-        pomanders.Add(new PomanderEntry("魔陶器：形态变化", ActionType.Action,    "Alteration",    3, 1u));
-        pomanders.Add(new PomanderEntry("魔陶器：解咒", ActionType.Action,        "Purity",    3, 1u));
-        pomanders.Add(new PomanderEntry("魔陶器：运气上升", ActionType.Action,    "Fortune",    2, 1u));
-        // pomanders.Add(new PomanderEntry("魔陶器：形态变化", ActionType.Action,    6269u,    1));
-        // pomanders.Add(new PomanderEntry("魔陶器：魔法效果解除", ActionType.Action, 6270u,    1));
+        pomanders.Add(new PomanderEntry("魔陶器：全景", ActionType.Action, "Sight", 1, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：强化自身", ActionType.Action, "Strength", 1, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：强化防御", ActionType.Action, "Steel", 1, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：宝箱增加", ActionType.Action,    "Affluence",    1, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：减少敌人", ActionType.Action,    "Flight",    1, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：形态变化", ActionType.Action,    "Alteration",    1, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：解咒", ActionType.Action,        "Purity",    1, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：运气上升", ActionType.Action,    "Fortune",    1, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：形态变化", ActionType.Action,    "Witching",    1, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：魔法效果解除", ActionType.Action, "Serenity",    1, 1u));
         // pomanders.Add(new PomanderEntry("魔陶器：重生", ActionType.Action,        6868u,    1));
 
         // 感知宝藏：一层就用。你之前已经确认是 Action #6870，就直接写死。

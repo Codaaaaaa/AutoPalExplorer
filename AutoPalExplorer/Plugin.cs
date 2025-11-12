@@ -33,7 +33,8 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
 
     private bool configWindowVisible = false;
-    internal bool ShowDeepDungeonTree = true;
+    // private bool autoExploreAdvancedOpen = false;
+
     private readonly Configuration config;
     private readonly AutoPalController controller;
     private readonly ObjectIdOverlay objectIdOverlay;
@@ -164,11 +165,28 @@ public sealed class Plugin : IDalamudPlugin
             controller.NotifyExitActivated();
         }
 
+        if (text.Contains("发现了埋藏的宝藏！", StringComparison.OrdinalIgnoreCase))
+        {
+            if (config.devMode)
+                Log.Information("发现了埋藏的宝藏");
+            controller.NotifyBuriedtActivated();
+        }
+
         if (text.Contains("成功进行了传送！", StringComparison.OrdinalIgnoreCase))
         {
             if (config.devMode)
                 Log.Information("下一层");
             controller.nextLevelActivated();
+        }
+
+        if (text.Contains("第10朝圣路") || text.Contains("第20朝圣路") || text.Contains("第30朝圣路"))
+        {
+            controller.NotifyBossFloor();
+        }
+
+        if (text.Contains("成功发送了参加申请"))
+        {
+            controller.NotifyChallengeRequestSent();
         }
     }
 
@@ -265,6 +283,71 @@ public sealed class Plugin : IDalamudPlugin
         {
             config.devMode = devModeStatus;
             config.Save();
+        }
+
+        ImGui.Separator();
+        if (ImGui.CollapsingHeader("自动探索参数",
+                ImGuiTreeNodeFlags.DefaultOpen)) // 想默认收起就去掉 DefaultOpen
+        {
+            ImGui.PushItemWidth(100f);
+            ImGui.TextUnformatted("如果你不知道你在干什么，不要修改这里的内容");
+            // ExitStopRadius
+            float exitStop = config.ExitStopRadius;
+            if (ImGui.DragFloat("激活门停步距离", ref exitStop, 0.1f, 0.1f, 10.0f, "%.1f"))
+            {
+                config.ExitStopRadius = MathF.Max(0.1f, exitStop);
+                config.Save();
+            }
+
+            // ChestDoneRadius
+            float chestDone = config.ChestDoneRadius;
+            if (ImGui.DragFloat("宝箱交互距离", ref chestDone, 0.1f, 0.5f, 10.0f, "%.1f"))
+            {
+                config.ChestDoneRadius = MathF.Max(0.1f, chestDone);
+                config.Save();
+            }
+
+            // BuriedChestDoneRadius
+            float buriedDone = config.BuriedChestDoneRadius;
+            if (ImGui.DragFloat("埋藏宝藏触发半径", ref buriedDone, 0.1f, 0.5f, 10.0f, "%.1f"))
+            {
+                config.BuriedChestDoneRadius = MathF.Max(0.1f, buriedDone);
+                config.Save();
+            }
+
+            // InactiveExitNearRadius
+            float inactiveNear = config.InactiveExitNearRadius;
+            if (ImGui.DragFloat("未激活门附近范围", ref inactiveNear, 0.5f, 1.0f, 30.0f, "%.1f"))
+            {
+                config.InactiveExitNearRadius = MathF.Max(0.1f, inactiveNear);
+                config.Save();
+            }
+
+            // EnemySearchRadius
+            float enemyRange = config.EnemySearchRadius;
+            if (ImGui.DragFloat("找怪范围", ref enemyRange, 10.0f, 10.0f, 1000.0f, "%.0f"))
+            {
+                config.EnemySearchRadius = MathF.Max(1.0f, enemyRange);
+                config.Save();
+            }
+
+            // TrapAvoidRadius
+            float trapRadius = config.TrapAvoidRadius;
+            if (ImGui.DragFloat("陷阱避让半径", ref trapRadius, 0.1f, 0.3f, 10.0f, "%.1f"))
+            {
+                config.TrapAvoidRadius = MathF.Max(0.1f, trapRadius);
+                config.Save();
+            }
+
+            // ChestInteractIntervalMs
+            int chestInterval = config.ChestInteractIntervalMs;
+            if (ImGui.DragInt("开箱节流间隔 (ms)", ref chestInterval, 50, 50, 5000))
+            {
+                config.ChestInteractIntervalMs = Math.Max(50, chestInterval);
+                config.Save();
+            }
+
+            ImGui.PopItemWidth();
         }
 
         ImGui.End();

@@ -65,7 +65,7 @@ namespace AutoPalExplorer.Helpers
             2007542u,
         };
 
-         // 陷阱
+        // 陷阱
         public static readonly HashSet<uint> TrapIds = new()
         {
 
@@ -75,6 +75,12 @@ namespace AutoPalExplorer.Helpers
             2007185, // 妨碍陷阱
             2014939, // 妖灵陷阱
         };
+
+        // Boss房出口
+        public const uint BossExitBaseId = 2005809;
+
+        // 下10层入口
+        public const uint NextPilgrimNpcBaseId = 2014758;
         
         public static bool IsBronzeChest(uint baseId)
             => BronzeChestIds.Contains(baseId);

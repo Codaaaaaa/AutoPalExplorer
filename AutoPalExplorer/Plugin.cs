@@ -56,7 +56,7 @@ public sealed class Plugin : IDalamudPlugin
         var navigator = new Navigator(ClientState, vnavmesh, Log);
         var exitDetector = new ExitDetector(ObjectTable, Log);
         var wallFollower = new WallFollower(ClientState, navigator, Log);
-        pomanderManager = new PomanderManager(ClientState, Log, CommandManager);
+        pomanderManager = new PomanderManager(ClientState, Log, CommandManager, config);
         pomanderDebuggerEx = new PomanderDebuggerEx(Log, GameInteropProvider, ClientState);
 
         controller = new AutoPalController(
@@ -68,7 +68,8 @@ public sealed class Plugin : IDalamudPlugin
             CommandManager,
             Condition,
             Log,
-            config
+            config,
+            pomanderManager
         );
         objectIdOverlay = new ObjectIdOverlay(ObjectTable, GameGui, config);
         uiSniffer = new UiSniffer(AddonLifecycle, Log);
@@ -176,7 +177,8 @@ public sealed class Plugin : IDalamudPlugin
         if (string.IsNullOrEmpty(text))
             return;
 
-        pomanderManager.OnChat(text);
+        pomanderManager.CalculateOnChat(text);
+        pomanderManager.UsingOnChat(text);
         // 这里匹配你游戏里的实际提示文本
         if (text.Contains("传送装置启动了", StringComparison.OrdinalIgnoreCase))
         {
@@ -307,11 +309,11 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         ImGui.Separator();
-        if (ImGui.CollapsingHeader("自动探索参数",
-                ImGuiTreeNodeFlags.DefaultOpen)) // 想默认收起就去掉 DefaultOpen
+        ImGui.TextUnformatted("测试:");
+        if (ImGui.CollapsingHeader("自动探索参数", ImGuiTreeNodeFlags.DefaultOpen))
         {
             ImGui.PushItemWidth(100f);
-            ImGui.TextUnformatted("如果你不知道你在干什么，不要修改这里的内容");
+            ImGui.TextUnformatted("如果你不知道参数的含义，不要修改这里的内容");
             // ExitStopRadius
             float exitStop = config.ExitStopRadius;
             if (ImGui.DragFloat("激活门停步距离", ref exitStop, 0.1f, 0.1f, 10.0f, "%.1f"))
@@ -370,14 +372,55 @@ public sealed class Plugin : IDalamudPlugin
 
             // 下一层间隔
             int challengeIntervalSeconds = config.ChallengeIntervalSeconds;
-            if (ImGui.DragInt("点击下一层间隔", ref challengeIntervalSeconds, 50, 50, 10000))
+            if (ImGui.DragInt("点击下一层间隔 (ms)", ref challengeIntervalSeconds, 50, 50, 10000))
             {
                 config.ChallengeIntervalSeconds = Math.Max(50, challengeIntervalSeconds);
+                config.Save();
+            }
+            // 魔陶器使用间隔
+            int pomanderIntervalSeconds = config.PomanderIntervalSeconds;
+            if (ImGui.DragInt("魔陶器使用间隔 (ms)", ref pomanderIntervalSeconds, 50, 50, 5000))
+            {
+                config.PomanderIntervalSeconds = Math.Max(50, pomanderIntervalSeconds);
                 config.Save();
             }
             ImGui.PopItemWidth();
         }
 
+        if (ImGui.CollapsingHeader("魔陶器数量", ImGuiTreeNodeFlags.DefaultOpen))
+        {
+            // 表头提示
+            ImGui.TextUnformatted("当前楼层已知的魔陶器数量：");
+            ImGui.Spacing();
+
+            // Begin 表格：2列（名称、数量）
+            if (ImGui.BeginTable("PomanderTable", 2,
+                    ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp))
+            {
+                // 设置列
+                ImGui.TableSetupColumn("名称", ImGuiTableColumnFlags.WidthStretch, 3.0f);
+                ImGui.TableSetupColumn("数量", ImGuiTableColumnFlags.WidthFixed, 1.0f);
+
+                ImGui.TableHeadersRow();
+
+                // 遍历 pomanderManager 中的列表
+                foreach (var p in pomanderManager.Pomanders)
+                {
+                    ImGui.TableNextRow();
+
+                    // 第一列：名字（魔陶器：xxxx）
+                    ImGui.TableSetColumnIndex(0);
+                    // 如果属性叫 Name，就改成 p.Name
+                    ImGui.TextUnformatted(p.Keyword);
+
+                    // 第二列：数量
+                    ImGui.TableSetColumnIndex(1);
+                    ImGui.TextUnformatted(p.Count.ToString());
+                }
+
+                ImGui.EndTable();
+            }
+        }
         ImGui.End();
     }
 }

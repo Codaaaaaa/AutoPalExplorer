@@ -52,8 +52,6 @@ namespace AutoPalExplorer.Helpers
         {
             2007358u,
             // 埋的
-            // 2007542u,
-            // 2007542,
             2007543u,
             // 烛台,
             // 2014759u,

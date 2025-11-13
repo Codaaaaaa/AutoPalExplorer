@@ -23,6 +23,7 @@ public sealed class AutoPalController
     private readonly ICondition condition;
     private readonly IPluginLog log;
     private readonly Configuration config;
+    private readonly PomanderManager pomanderManager;
 
     public bool IsRunning { get; private set; }
 
@@ -51,7 +52,8 @@ public sealed class AutoPalController
         ICommandManager commandManager,
         ICondition condition,
         IPluginLog log,
-        Configuration config)
+        Configuration config,
+        PomanderManager pomanderManager)
     {
         this.clientState = clientState;
         this.navigator = navigator;
@@ -62,6 +64,7 @@ public sealed class AutoPalController
         this.condition = condition;
         this.log = log;
         this.config = config;
+        this.pomanderManager = pomanderManager;
     }
 
     public void Start()
@@ -161,7 +164,6 @@ public sealed class AutoPalController
         {
             if (config.devMode)
                 log.Information("[AutoPalExplorer] Update：本地玩家为空，等待。");
-            // Stop();
             return;
         }
 
@@ -236,6 +238,9 @@ public sealed class AutoPalController
             if (HandleBossFloorQueueing(pos))
                 return; // 队列逻辑接管
         }
+
+        // 1.5 检测状态并且使用魔陶器
+        pomanderManager.UsingPomander();
 
         // 2. 更新导航 & 目标检测
         navigator.Update();

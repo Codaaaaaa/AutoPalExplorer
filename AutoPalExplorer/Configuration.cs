@@ -47,6 +47,9 @@ public class Configuration : IPluginConfiguration
     // 重新排队时间
     public int ChallengeIntervalSeconds { get; set; } = 10000;
 
+    // 魔陶器使用间隔
+    public int PomanderIntervalSeconds { get; set; } = 5000;
+
     [System.NonSerialized]
     private IDalamudPluginInterface? pluginInterface;
 

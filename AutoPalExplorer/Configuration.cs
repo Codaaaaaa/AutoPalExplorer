@@ -45,7 +45,7 @@ public class Configuration : IPluginConfiguration
     public int ChestInteractIntervalMs { get; set; } = 500;
 
     // 重新排队时间
-    public int ChallengeIntervalSeconds { get; set; } = 10;
+    public int ChallengeIntervalSeconds { get; set; } = 10000;
 
     [System.NonSerialized]
     private IDalamudPluginInterface? pluginInterface;

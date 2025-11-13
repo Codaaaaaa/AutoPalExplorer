@@ -12,6 +12,7 @@ using Dalamud.Bindings.ImGui;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using AutoPalExplorer.Services;
 using AutoPalExplorer.Debug;
+using AutoPalExplorer.Helpers;
 
 namespace AutoPalExplorer;
 
@@ -31,6 +32,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IGameGui GameGui { get; private set; } = null;
     [PluginService] internal static IGameInteropProvider GameInteropProvider { get; private set; } = null!;
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
+    [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
 
     private bool configWindowVisible = false;
     // private bool autoExploreAdvancedOpen = false;
@@ -40,6 +42,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly ObjectIdOverlay objectIdOverlay;
     private readonly PomanderManager pomanderManager;
     private PomanderDebuggerEx? pomanderDebuggerEx;
+    private UiSniffer? uiSniffer;
 
     public Plugin()
     {
@@ -68,6 +71,13 @@ public sealed class Plugin : IDalamudPlugin
             config
         );
         objectIdOverlay = new ObjectIdOverlay(ObjectTable, GameGui, config);
+        uiSniffer = new UiSniffer(AddonLifecycle, Log);
+        CommandManager.AddHandler("/uiwatch", new CommandInfo(OnUiWatch)
+        {
+            HelpMessage = "Log addon names/types (usage: /uiwatch on | off)"
+        });
+
+        Log.Information("[AutoPalExplorer] Plugin loaded.");
 
         // 注册命令
         CommandManager.AddHandler(Command, new CommandInfo(OnCommand)
@@ -94,6 +104,16 @@ public sealed class Plugin : IDalamudPlugin
             Log.Information("[AutoPalExplorer] Loaded.");
     }
 
+    private void OnUiWatch(string cmd, string args)
+    {
+        if (string.Equals(args, "on", StringComparison.OrdinalIgnoreCase))
+            uiSniffer?.Enable();
+        else if (string.Equals(args, "off", StringComparison.OrdinalIgnoreCase))
+            uiSniffer?.Disable();
+        else
+            Log.Information("Usage: /uiwatch on | off");
+
+    }
     private void OnFrameworkUpdate(IFramework framework)
     {
         // pomanderDebuggerEx?.UsePomander(6268u);
@@ -192,6 +212,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
+        uiSniffer?.Dispose();
         Framework.Update -= OnFrameworkUpdate;
         CommandManager.RemoveHandler(Command);
         ChatGui.ChatMessage -= OnChatMessage;
@@ -347,6 +368,13 @@ public sealed class Plugin : IDalamudPlugin
                 config.Save();
             }
 
+            // 下一层间隔
+            int challengeIntervalSeconds = config.ChallengeIntervalSeconds;
+            if (ImGui.DragInt("点击下一层间隔", ref challengeIntervalSeconds, 50, 50, 10000))
+            {
+                config.ChallengeIntervalSeconds = Math.Max(50, challengeIntervalSeconds);
+                config.Save();
+            }
             ImGui.PopItemWidth();
         }
 

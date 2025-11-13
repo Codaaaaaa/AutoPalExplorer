@@ -160,8 +160,8 @@ public sealed class AutoPalController
         if (player is null)
         {
             if (config.devMode)
-                log.Information("[AutoPalExplorer] Update：本地玩家为空，自动停止。");
-            Stop();
+                log.Information("[AutoPalExplorer] Update：本地玩家为空，等待。");
+            // Stop();
             return;
         }
 
@@ -697,7 +697,7 @@ public sealed class AutoPalController
         var now = DateTime.UtcNow;
         if (now >= nextChallengeAttemptAt)
         {
-            TryClickNextPilgrim();
+            TryInteractWithObject(npc, "挑战下一朝圣路NPC");
             nextChallengeAttemptAt = now.AddSeconds(ChallengeIntervalSeconds);
         }
 

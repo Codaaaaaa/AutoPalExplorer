@@ -4,6 +4,7 @@ namespace AutoPalExplorer.Helpers
 {
     public static class MapIds
     {
+        public const uint WaitingRoom = 1280; //下一层入口
         public const uint PilgrimsTraverse0 = 1281; // 第 1~10朝圣路
         public const uint PilgrimsTraverse1 = 1282; // 第 11~20朝圣路
         public const uint PilgrimsTraverse2 = 1283;
@@ -22,6 +23,7 @@ namespace AutoPalExplorer.Helpers
         /// </summary>
         public static readonly HashSet<uint> AllPilgrimsTraverse = new()
         {
+            WaitingRoom,
             PilgrimsTraverse0,
             PilgrimsTraverse1,
             PilgrimsTraverse2,

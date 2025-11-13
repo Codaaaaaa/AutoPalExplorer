@@ -47,19 +47,21 @@ public sealed class PomanderManager
         // 注意：除了你已经确认的感知宝藏 6870，其它 ActionId 我在当前环境下拿不到可靠数据，
         // 不想给你乱编。请你用自己现有的方法（如 Excel 表 / SaintCoinach / 已有插件）把 ID 补上。
 
-        pomanders.Add(new PomanderEntry("魔陶器：咒印解除", ActionType.Action, "Safety", 1, 1u));
-        pomanders.Add(new PomanderEntry("魔陶器：全景", ActionType.Action, "Sight", 1, 1u));
-        pomanders.Add(new PomanderEntry("魔陶器：强化自身", ActionType.Action, "Strength", 1, 1u));
-        pomanders.Add(new PomanderEntry("魔陶器：强化防御", ActionType.Action, "Steel", 1, 1u));
-        pomanders.Add(new PomanderEntry("魔陶器：宝箱增加", ActionType.Action,    "Affluence",    1, 1u));
-        pomanders.Add(new PomanderEntry("魔陶器：减少敌人", ActionType.Action,    "Flight",    1, 1u));
-        pomanders.Add(new PomanderEntry("魔陶器：形态变化", ActionType.Action,    "Alteration",    1, 1u));
-        pomanders.Add(new PomanderEntry("魔陶器：解咒", ActionType.Action,        "Purity",    1, 1u));
-        pomanders.Add(new PomanderEntry("魔陶器：运气上升", ActionType.Action,    "Fortune",    1, 1u));
-        pomanders.Add(new PomanderEntry("魔陶器：形态变化", ActionType.Action,    "Witching",    1, 1u));
-        pomanders.Add(new PomanderEntry("魔陶器：魔法效果解除", ActionType.Action, "Serenity",    1, 1u));
-        // pomanders.Add(new PomanderEntry("魔陶器：重生", ActionType.Action,        6868u,    1));
-
+        pomanders.Add(new PomanderEntry("魔陶器：咒印解除", ActionType.Action,    "Safety", 2, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：全景", ActionType.Action,        "Sight", 2, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：强化自身", ActionType.Action,    "Strength", 2, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：强化防御", ActionType.Action,    "Steel", 2, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：宝箱增加", ActionType.Action,    "Affluence",    2, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：减少敌人", ActionType.Action,    "Flight",    2, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：解咒", ActionType.Action,        "Purity",    2, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：运气上升", ActionType.Action,    "Fortune",    2, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：形态变化", ActionType.Action,    "Witching",    2, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：魔法效果解除", ActionType.Action, "Serenity",    2, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：净化护符", ActionType.Action,    "PurificationPomander", 2, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：加速", ActionType.Action,        "HastePomander", 2, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：朝圣的指引", ActionType.Action,   "DevotionPomander",    2, 1u));
+        pomanders.Add(new PomanderEntry("魔陶器：重生", ActionType.Action, "Raising", 2, 1u));
+        
         // 感知宝藏：一层就用。你之前已经确认是 Action #6870，就直接写死。
         pomanders.Add(new PomanderEntry("魔陶器：感知宝藏", ActionType.Action, "Intuition", 1, 1u));
     }

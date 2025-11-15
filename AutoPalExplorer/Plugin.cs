@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Text.RegularExpressions;
 using Dalamud.Game.Command;
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
@@ -29,13 +30,10 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IObjectTable ObjectTable { get; private set; } = null!;
     [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] internal static ICondition Condition { get; private set; } = null!;
-    [PluginService] internal static IGameGui GameGui { get; private set; } = null;
+    [PluginService] internal static IGameGui GameGui { get; private set; } = null!;
     [PluginService] internal static IGameInteropProvider GameInteropProvider { get; private set; } = null!;
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
     [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
-
-    private bool configWindowVisible = false;
-    // private bool autoExploreAdvancedOpen = false;
 
     private readonly Configuration config;
     private readonly AutoPalController controller;
@@ -44,9 +42,11 @@ public sealed class Plugin : IDalamudPlugin
     private PomanderDebuggerEx? pomanderDebuggerEx;
     private UiSniffer? uiSniffer;
 
+    // ⭐ 新增：UI 封装类
+    private readonly ConfigWindow configWindow;
+
     public Plugin()
     {
-
         // 加载配置
         config = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         config.Initialize(PluginInterface);
@@ -56,7 +56,7 @@ public sealed class Plugin : IDalamudPlugin
         var navigator = new Navigator(ClientState, vnavmesh, Log);
         var exitDetector = new ExitDetector(ObjectTable, Log);
         var wallFollower = new WallFollower(ClientState, navigator, Log);
-        pomanderManager = new PomanderManager(ClientState, Log, CommandManager, config);
+        pomanderManager = new PomanderManager(ClientState, Log, CommandManager, config, ChatGui, Condition);
         pomanderDebuggerEx = new PomanderDebuggerEx(Log, GameInteropProvider, ClientState);
 
         controller = new AutoPalController(
@@ -73,6 +73,10 @@ public sealed class Plugin : IDalamudPlugin
         );
         objectIdOverlay = new ObjectIdOverlay(ObjectTable, GameGui, config);
         uiSniffer = new UiSniffer(AddonLifecycle, Log);
+
+        // ⭐ 实例化配置窗口
+        configWindow = new ConfigWindow(config, controller, pomanderManager);
+
         CommandManager.AddHandler("/uiwatch", new CommandInfo(OnUiWatch)
         {
             HelpMessage = "Log addon names/types (usage: /uiwatch on | off)"
@@ -113,8 +117,8 @@ public sealed class Plugin : IDalamudPlugin
             uiSniffer?.Disable();
         else
             Log.Information("Usage: /uiwatch on | off");
-
     }
+
     private void OnFrameworkUpdate(IFramework framework)
     {
         // pomanderDebuggerEx?.UsePomander(6268u);
@@ -136,15 +140,17 @@ public sealed class Plugin : IDalamudPlugin
                 controller.Stop();
                 ChatGui.Print("[AutoPalExplorer] Stopped.");
                 break;
+
             case "config":
-                configWindowVisible = true;
+                // ⭐ 打开配置窗口
+                configWindow.Open();
                 break;
+
             case "toggle":
             case "debug":
                 PomanderDebugger.DumpPomanderSheets(DataManager, Log);
-                // PomanderDebugger.DumpItems(DataManager, Log);
-                // PomanderDebugger.DumpActions(DataManager, Log);
                 break;
+
             case "":
                 if (controller.IsRunning)
                 {
@@ -164,8 +170,6 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    // 必须精确匹配 IChatGui.OnMessageDelegate:
-    // (XivChatType type, int timestamp, ref SeString sender, ref SeString message, ref bool isHandled)
     private void OnChatMessage(
         XivChatType type,
         int timestamp,
@@ -179,7 +183,7 @@ public sealed class Plugin : IDalamudPlugin
 
         pomanderManager.CalculateOnChat(text);
         pomanderManager.UsingOnChat(text);
-        // 这里匹配你游戏里的实际提示文本
+
         if (text.Contains("传送装置启动了", StringComparison.OrdinalIgnoreCase))
         {
             if (config.devMode)
@@ -192,7 +196,16 @@ public sealed class Plugin : IDalamudPlugin
             if (config.devMode)
                 Log.Information("发现了埋藏的宝藏");
             controller.NotifyBuriedtActivated();
+            pomanderManager.NotifyBuriedtBuff();
         }
+
+        if (text.Contains("获得了埋藏的宝藏！", StringComparison.OrdinalIgnoreCase))
+        {
+            if (config.devMode)
+                Log.Information("发现了埋藏的宝藏");
+            pomanderManager.ResetBuriedBuff();
+        }
+
 
         if (text.Contains("成功进行了传送！", StringComparison.OrdinalIgnoreCase))
         {
@@ -201,7 +214,7 @@ public sealed class Plugin : IDalamudPlugin
             controller.nextLevelActivated();
         }
 
-        if (text.Contains("第10朝圣路") || text.Contains("第20朝圣路") || text.Contains("第30朝圣路"))
+        if (Regex.IsMatch(text, @"第([1-9]0)朝圣路"))
         {
             controller.NotifyBossFloor();
         }
@@ -220,7 +233,6 @@ public sealed class Plugin : IDalamudPlugin
         ChatGui.ChatMessage -= OnChatMessage;
         pomanderManager.Reset();
 
-        // UI
         PluginInterface.UiBuilder.Draw -= DrawUi;
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleConfigUi;
@@ -229,198 +241,15 @@ public sealed class Plugin : IDalamudPlugin
         if (config.devMode)
             Log.Information("[AutoPalExplorer] Disposed.");
     }
+
     private void ToggleConfigUi()
     {
-        configWindowVisible = !configWindowVisible;
+        configWindow.Toggle();
     }
 
     private void DrawUi()
     {
         objectIdOverlay.Draw();
-        if (!configWindowVisible)
-            return;
-
-        ImGui.SetNextWindowSize(new Vector2(420, 260), ImGuiCond.FirstUseEver);
-
-        if (!ImGui.Begin("AutoPalExplorer", ref configWindowVisible,
-                ImGuiWindowFlags.AlwaysAutoResize))
-        {
-            ImGui.End();
-            return;
-        }
-
-        // 标题
-        ImGui.TextUnformatted("Auto Palace Explorer");
-
-        // Start / Stop 按钮
-        if (controller.IsRunning)
-        {
-            if (ImGui.Button("Stop##autopal"))
-                controller.Stop();
-        }
-        else
-        {
-            if (ImGui.Button("Start##autopal"))
-                controller.Start();
-        }
-
-        ImGui.Separator();
-        ImGui.TextUnformatted("战斗设置:");
-
-        // BMRAI 控制
-        bool useBmrai = config.UseBmrai;
-        if (ImGui.Checkbox("用BossMod和Rotation来自动打怪", ref useBmrai))
-        {
-            config.UseBmrai = useBmrai;
-            config.Save();
-        }
-
-        ImGui.Separator();
-        ImGui.TextUnformatted("箱子设置:");
-
-        bool openBronze = config.OpenBronzeChests;
-        if (ImGui.Checkbox("开启铜箱子", ref openBronze))
-        {
-            config.OpenBronzeChests = openBronze;
-            config.Save();
-        }
-
-        bool openSilver = config.OpenSilverChests;
-        if (ImGui.Checkbox("开启银箱子", ref openSilver))
-        {
-            config.OpenSilverChests = openSilver;
-            config.Save();
-        }
-
-        bool openGold = config.OpenGoldChests;
-        if (ImGui.Checkbox("开启金箱子", ref openGold))
-        {
-            config.OpenGoldChests = openGold;
-            config.Save();
-        }
-
-        ImGui.Separator();
-        ImGui.TextUnformatted("其他:");
-        bool devModeStatus = config.devMode;
-        if (ImGui.Checkbox("开发者(拉屎)模式", ref devModeStatus))
-        {
-            config.devMode = devModeStatus;
-            config.Save();
-        }
-
-        ImGui.Separator();
-        ImGui.TextUnformatted("测试:");
-        if (ImGui.CollapsingHeader("自动探索参数", ImGuiTreeNodeFlags.DefaultOpen))
-        {
-            ImGui.PushItemWidth(100f);
-            ImGui.TextUnformatted("如果你不知道参数的含义，不要修改这里的内容");
-            // ExitStopRadius
-            float exitStop = config.ExitStopRadius;
-            if (ImGui.DragFloat("激活门停步距离", ref exitStop, 0.1f, 0.1f, 10.0f, "%.1f"))
-            {
-                config.ExitStopRadius = MathF.Max(0.1f, exitStop);
-                config.Save();
-            }
-
-            // ChestDoneRadius
-            float chestDone = config.ChestDoneRadius;
-            if (ImGui.DragFloat("宝箱交互距离", ref chestDone, 0.1f, 0.5f, 10.0f, "%.1f"))
-            {
-                config.ChestDoneRadius = MathF.Max(0.1f, chestDone);
-                config.Save();
-            }
-
-            // BuriedChestDoneRadius
-            float buriedDone = config.BuriedChestDoneRadius;
-            if (ImGui.DragFloat("埋藏宝藏触发半径", ref buriedDone, 0.1f, 0.5f, 10.0f, "%.1f"))
-            {
-                config.BuriedChestDoneRadius = MathF.Max(0.1f, buriedDone);
-                config.Save();
-            }
-
-            // InactiveExitNearRadius
-            float inactiveNear = config.InactiveExitNearRadius;
-            if (ImGui.DragFloat("未激活门附近范围", ref inactiveNear, 0.5f, 1.0f, 30.0f, "%.1f"))
-            {
-                config.InactiveExitNearRadius = MathF.Max(0.1f, inactiveNear);
-                config.Save();
-            }
-
-            // EnemySearchRadius
-            float enemyRange = config.EnemySearchRadius;
-            if (ImGui.DragFloat("找怪范围", ref enemyRange, 10.0f, 10.0f, 1000.0f, "%.0f"))
-            {
-                config.EnemySearchRadius = MathF.Max(1.0f, enemyRange);
-                config.Save();
-            }
-
-            // TrapAvoidRadius
-            float trapRadius = config.TrapAvoidRadius;
-            if (ImGui.DragFloat("陷阱避让半径", ref trapRadius, 0.1f, 0.3f, 10.0f, "%.1f"))
-            {
-                config.TrapAvoidRadius = MathF.Max(0.1f, trapRadius);
-                config.Save();
-            }
-
-            // ChestInteractIntervalMs
-            int chestInterval = config.ChestInteractIntervalMs;
-            if (ImGui.DragInt("开箱节流间隔 (ms)", ref chestInterval, 50, 50, 5000))
-            {
-                config.ChestInteractIntervalMs = Math.Max(50, chestInterval);
-                config.Save();
-            }
-
-            // 下一层间隔
-            int challengeIntervalSeconds = config.ChallengeIntervalSeconds;
-            if (ImGui.DragInt("点击下一层间隔 (ms)", ref challengeIntervalSeconds, 50, 50, 10000))
-            {
-                config.ChallengeIntervalSeconds = Math.Max(50, challengeIntervalSeconds);
-                config.Save();
-            }
-            // 魔陶器使用间隔
-            int pomanderIntervalSeconds = config.PomanderIntervalSeconds;
-            if (ImGui.DragInt("魔陶器使用间隔 (ms)", ref pomanderIntervalSeconds, 50, 50, 5000))
-            {
-                config.PomanderIntervalSeconds = Math.Max(50, pomanderIntervalSeconds);
-                config.Save();
-            }
-            ImGui.PopItemWidth();
-        }
-
-        if (ImGui.CollapsingHeader("魔陶器数量", ImGuiTreeNodeFlags.DefaultOpen))
-        {
-            // 表头提示
-            ImGui.TextUnformatted("当前楼层已知的魔陶器数量：");
-            ImGui.Spacing();
-
-            // Begin 表格：2列（名称、数量）
-            if (ImGui.BeginTable("PomanderTable", 2,
-                    ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp))
-            {
-                // 设置列
-                ImGui.TableSetupColumn("名称", ImGuiTableColumnFlags.WidthStretch, 3.0f);
-                ImGui.TableSetupColumn("数量", ImGuiTableColumnFlags.WidthFixed, 1.0f);
-
-                ImGui.TableHeadersRow();
-
-                // 遍历 pomanderManager 中的列表
-                foreach (var p in pomanderManager.Pomanders)
-                {
-                    ImGui.TableNextRow();
-
-                    // 第一列：名字（魔陶器：xxxx）
-                    ImGui.TableSetColumnIndex(0);
-                    // 如果属性叫 Name，就改成 p.Name
-                    ImGui.TextUnformatted(p.Keyword);
-
-                    // 第二列：数量
-                    ImGui.TableSetColumnIndex(1);
-                    ImGui.TextUnformatted(p.Count.ToString());
-                }
-
-                ImGui.EndTable();
-            }
-        }
-        ImGui.End();
+        configWindow.Draw();
     }
 }

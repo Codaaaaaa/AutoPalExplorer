@@ -42,6 +42,7 @@ public sealed class AutoPalController
     private float TrapAvoidRadiusCfg => MathF.Max(0.1f, config.TrapAvoidRadius);
     private int ChestInteractIntervalMs => Math.Max(50, config.ChestInteractIntervalMs);
     private bool nextLevelBool = false;
+    private bool hasOpenedNextPilgrimWindow = false;
 
     public AutoPalController(
         IClientState clientState,
@@ -130,6 +131,7 @@ public sealed class AutoPalController
     public void nextLevelActivated()
     {
         nextLevelBool = true;
+        hasOpenedNextPilgrimWindow = false;
         if (config.devMode)
             log.Information("[AutoPalExplorer] 标记换层（nextLevelActivated）。");
     }
@@ -137,6 +139,7 @@ public sealed class AutoPalController
     {
         isBossFloor = true;
         isBossFloorQueueing = false;
+        hasOpenedNextPilgrimWindow = false;
         nextChallengeAttemptAt = DateTime.MinValue;
 
         if (config.devMode)
@@ -148,6 +151,7 @@ public sealed class AutoPalController
         // 收到“成功发送了参加申请”，说明排队申请已发出，可以退出 Boss 流程
         isBossFloor = false;
         isBossFloorQueueing = false;
+        hasOpenedNextPilgrimWindow = false;
         nextChallengeAttemptAt = DateTime.MinValue;
 
         if (config.devMode)
@@ -188,6 +192,7 @@ public sealed class AutoPalController
         {
             nextLevelBool = false;
             lastTerritoryType = clientState.TerritoryType;
+            pomanderManager.ResetBuff();
             wallFollower.Reset();
             exitDetector.Reset();
             navigator.Stop();
@@ -199,6 +204,10 @@ public sealed class AutoPalController
                 log.Information("[AutoPalExplorer] 检测到换层，已重置状态 (Territory={Territory}).", clientState.TerritoryType);
         }
 
+        // 0.5 检测状态并且使用魔陶器
+        if (!isBossFloor && !isBossFloorQueueing)
+            pomanderManager.UsingPomander();
+        
         // 1. 战斗状态：交给 BMRAI，暂停导航
         var inCombat = condition[ConditionFlag.InCombat];
         if (inCombat)
@@ -235,12 +244,11 @@ public sealed class AutoPalController
         // 1.2 已从Boss房传送出，正在处理“挑战下一朝圣路”
         if (isBossFloor && isBossFloorQueueing)
         {
+            pomanderManager.ResetBuff();
+            pomanderManager.ResetBuriedBuff();
             if (HandleBossFloorQueueing(pos))
                 return; // 队列逻辑接管
         }
-
-        // 1.5 检测状态并且使用魔陶器
-        pomanderManager.UsingPomander();
 
         // 2. 更新导航 & 目标检测
         navigator.Update();
@@ -688,22 +696,36 @@ public sealed class AutoPalController
             }
             else
             {
-                // 到了身边就保证交互一次，弹出菜单/确认框
-                TryInteractWithObject(npc, "挑战下一朝圣路NPC");
+                // 已到 NPC 身边：只在「第一次」靠近时交互一次，打开窗口
+                if (!hasOpenedNextPilgrimWindow)
+                {
+                    TryInteractWithObject(npc, "挑战下一朝圣路NPC");
+                    hasOpenedNextPilgrimWindow = true;
+                    nextChallengeAttemptAt = DateTime.UtcNow.AddSeconds(ChallengeIntervalSeconds);
+
+                    if (config.devMode)
+                        log.Information("[AutoPalExplorer] [Boss层] [Queue] 已与 NPC 交互一次，等待窗口并开始定时点击。");
+                }
             }
         }
         else
         {
-            if (config.devMode)
-                log.Information("[AutoPalExplorer] [Boss层] [Queue] 未找到 2014758，等待下一帧。");
+            // NPC 不在视野里，重置一下状态，下次看到再交互
+            if (hasOpenedNextPilgrimWindow && config.devMode)
+                log.Information("[AutoPalExplorer] [Boss层] [Queue] NPC 不在场景中，重置窗口状态。");
+
+            hasOpenedNextPilgrimWindow = false;
         }
 
-        // 每隔一定时间尝试点“挑战下一朝圣路”
+        // 每隔一定时间尝试点“挑战下一朝圣路”按钮（而不是再跟 NPC 说话）
         var now = DateTime.UtcNow;
-        if (now >= nextChallengeAttemptAt)
+        if (hasOpenedNextPilgrimWindow && now >= nextChallengeAttemptAt)
         {
             TryInteractWithObject(npc, "挑战下一朝圣路NPC");
             nextChallengeAttemptAt = now.AddSeconds(ChallengeIntervalSeconds);
+
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] [Boss层] [Queue] 定时尝试点击“挑战下一朝圣路”按钮。");
         }
 
         // 这里仍返回 true，让通用逻辑不要乱跑，直到 NotifyChallengeRequestSent 把 isBossFloor 清掉。

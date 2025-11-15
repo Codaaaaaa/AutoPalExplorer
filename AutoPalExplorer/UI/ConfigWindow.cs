@@ -2,7 +2,7 @@ using System;
 using System.Numerics;
 using Dalamud.Interface;
 using Dalamud.Bindings.ImGui;
-using ImGuiNET;
+using FFXIVClientStructs.FFXIV.Component.GUI;
 using AutoPalExplorer.Services;
 using AutoPalExplorer.Helpers;
 
@@ -181,9 +181,9 @@ namespace AutoPalExplorer
 
                 // 下一层间隔
                 int challengeIntervalSeconds = config.ChallengeIntervalSeconds;
-                if (ImGui.DragInt("点击下一层间隔 (ms)", ref challengeIntervalSeconds, 50, 50, 10000))
+                if (ImGui.DragInt("点击下一层间隔 (s)", ref challengeIntervalSeconds, 1, 1, 10))
                 {
-                    config.ChallengeIntervalSeconds = Math.Max(50, challengeIntervalSeconds);
+                    config.ChallengeIntervalSeconds = Math.Max(1, challengeIntervalSeconds);
                     config.Save();
                 }
 
@@ -200,14 +200,14 @@ namespace AutoPalExplorer
 
             if (ImGui.CollapsingHeader("魔陶器数量", ImGuiTreeNodeFlags.DefaultOpen))
             {
-                ImGui.TextUnformatted("当前楼层已知的魔陶器数量：");
+                ImGui.TextUnformatted("魔陶器数量：");
                 ImGui.Spacing();
 
                 if (ImGui.BeginTable("PomanderTable", 2,
                         ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp))
                 {
-                    ImGui.TableSetupColumn("名称", ImGuiTableColumnFlags.WidthStretch, 3.0f);
-                    ImGui.TableSetupColumn("数量", ImGuiTableColumnFlags.WidthFixed, 1.0f);
+                    ImGui.TableSetupColumn("名称", ImGuiTableColumnFlags.WidthStretch, 4.0f);
+                    ImGui.TableSetupColumn("数量", ImGuiTableColumnFlags.WidthStretch, 0.7f);
 
                     ImGui.TableHeadersRow();
 
@@ -217,16 +217,93 @@ namespace AutoPalExplorer
 
                         ImGui.TableSetColumnIndex(0);
                         ImGui.TextUnformatted(p.Keyword);
-
+                        
                         ImGui.TableSetColumnIndex(1);
-                        ImGui.TextUnformatted(p.Count.ToString());
+                        int count = p.Count;
+                        if (ImGui.DragInt($"##pomander_count_{p.PomanderType}", ref count, 1, 0, 99))
+                        {
+                            if (count < 0)
+                                count = 0;
+
+                            pomanderManager.SetPomanderCount(p.PomanderType, count);
+                        }
                     }
 
                     ImGui.EndTable();
                 }
             }
+            
+            if (ImGui.CollapsingHeader("玩家 Buff 状态（只读）", ImGuiTreeNodeFlags.DefaultOpen))
+            {
+                DrawPlayerStatusList();
+            }
 
             ImGui.End();
         }
+
+        private void DrawPlayerStatusList()
+        {
+            var player = Plugin.ClientState.LocalPlayer;
+            if (player == null)
+            {
+                ImGui.TextUnformatted("玩家不存在");
+                return;
+            }
+
+            ImGui.TextUnformatted("当前 Buff 列表（StatusId / 名称 / 剩余时间）:");
+            ImGui.Spacing();
+
+            if (ImGui.BeginTable("PlayerStatusTable", 3,
+                ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp))
+            {
+                ImGui.TableSetupColumn("ID", ImGuiTableColumnFlags.WidthFixed, 60f);
+                ImGui.TableSetupColumn("Buff 名称", ImGuiTableColumnFlags.WidthStretch, 3f);
+                ImGui.TableSetupColumn("剩余时间 (s)", ImGuiTableColumnFlags.WidthFixed, 120f);
+
+                ImGui.TableHeadersRow();
+
+                foreach (var status in player.StatusList)
+                {
+                    if (status.StatusId == 0)
+                        continue;
+
+                    string name = GetStatusName((ushort)status.StatusId);
+
+                    ImGui.TableNextRow();
+
+                    ImGui.TableSetColumnIndex(0);
+                    ImGui.TextUnformatted(status.StatusId.ToString());
+
+                    ImGui.TableSetColumnIndex(1);
+                    ImGui.TextUnformatted(name);
+
+                    ImGui.TableSetColumnIndex(2);
+                    ImGui.TextUnformatted($"{status.RemainingTime:0.0}");
+                }
+
+                ImGui.EndTable();
+            }
+        }
+
+        private string GetStatusName(ushort statusId)
+        {
+            try
+            {
+                var sheet = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.Status>();
+                var row = sheet?.GetRow(statusId);   // row 是 Status?
+
+                if (row == null)
+                    return "(Unknown)";
+
+                // row.Value 才是真正的 struct，可以访问 Name 字段
+                return row.Value.Name.ToString() ?? "(Unknown)";
+            }
+            catch
+            {
+                return "(Unknown)";
+            }
+        }
+
+
     }
 }

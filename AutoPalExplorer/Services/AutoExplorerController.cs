@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using System.Collections.Generic;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.ClientState.Objects;
 using Dalamud.Game.ClientState.Objects.Enums;
@@ -43,6 +44,13 @@ public sealed class AutoPalController
     private int ChestInteractIntervalMs => Math.Max(50, config.ChestInteractIntervalMs);
     private bool nextLevelBool = false;
     private bool hasOpenedNextPilgrimWindow = false;
+    private readonly HashSet<ulong> ignoredChestIds = new(); // 需要跳过的宝箱
+    private ulong lastChestInteractObjectId = 0;             // 最近一次尝试交互的宝箱ID
+
+    // 跟车模式
+    private bool wasInCombatOnBossFloor = false;
+    private bool IsFollowMode => config.Mode == AutoMode.Follow;
+
 
     public AutoPalController(
         IClientState clientState,
@@ -90,7 +98,16 @@ public sealed class AutoPalController
         navigator.Stop();
         EnsureBmraiOff();
         isBossFloor = false;
+        ignoredChestIds.Clear();
+        lastChestInteractObjectId = 0;
 
+        // 跟车模式
+        // wasInCombatOnBossFloor = false;
+
+        // if (IsFollowMode)
+        // {
+        //     StartFollowLoop();
+        // }
         if (config.devMode)
             log.Information("[AutoPalExplorer] 已启动，当前地城 Territory={TerritoryType}。", clientState.TerritoryType);
     }
@@ -107,6 +124,8 @@ public sealed class AutoPalController
         IsRunning = false;
         navigator.Stop();
         EnsureBmraiOff();
+        ignoredChestIds.Clear();
+        lastChestInteractObjectId = 0;
 
         if (config.devMode)
             log.Information("[AutoPalExplorer] 已停止。");
@@ -199,6 +218,8 @@ public sealed class AutoPalController
             // isBossFloor = false;
             hasOpenBurinedChest = false;
             EnsureBmraiOff();
+            ignoredChestIds.Clear();
+            lastChestInteractObjectId = 0;
 
             if (config.devMode)
                 log.Information("[AutoPalExplorer] 检测到换层，已重置状态 (Territory={Territory}).", clientState.TerritoryType);
@@ -313,6 +334,58 @@ public sealed class AutoPalController
         // ==== 3.1 宝箱（优先度：有就去） ====
         if (exitDetector.HasChest && exitDetector.Chest is { } chest)
         {
+            if (IsIgnoredChest(chest))
+            {
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] 宝箱 BaseId={BaseId}, GameObjectId={Id} 在忽略列表中，跳过。",
+                        chest.BaseId, chest.GameObjectId);
+            }
+            else
+            {
+                if (config.devMode)
+                log.Information("[AutoPalExplorer] 检测到宝箱 BaseId={BaseId}, 位置=({X:0.00},{Y:0.00},{Z:0.00}), Targetable={Targetable}",
+                    chest.BaseId, chest.Position.X, chest.Position.Y, chest.Position.Z, chest.IsTargetable);
+
+                if (!ShouldOpenChest(chest.BaseId))
+                {
+                    if (config.devMode)
+                        log.Information("[AutoPalExplorer] 配置不允许当前类型宝箱，跳过。");
+                }
+                else if (chest.IsTargetable)
+                {
+                    var dx = chest.Position.X - pos.X;
+                    var dz = chest.Position.Z - pos.Z;
+                    var distSq = dx * dx + dz * dz;
+
+                    if (distSq > ChestDoneRadius * ChestDoneRadius)
+                    {
+                        if (config.devMode)
+                            log.Information("[AutoPalExplorer] 前往宝箱中，当前距离={Dist:0.00} (> {R})。",
+                                MathF.Sqrt(distSq), ChestDoneRadius);
+
+                        if (IsDifferentTarget(currentTarget, chest.Position, 1.0f))
+                        {
+                            if (config.devMode)
+                                log.Information("[AutoPalExplorer] 切换导航目标为宝箱。");
+                            navigator.Stop();
+                            navigator.TryMoveTo(chest.Position);
+                        }
+                        return;
+                    }
+                    else
+                    {
+                        if (config.devMode)
+                            log.Information("[AutoPalExplorer] 已到宝箱边，尝试交互开箱。");
+                        TryOpenChest(chest);
+                        // 不 return，让后续逻辑继续，看是否有门/怪
+                    }
+                }
+                else
+                {
+                    if (config.devMode)
+                        log.Information("[AutoPalExplorer] 宝箱目前不可交互 (可能已开/动画中)，跳过。");
+                }
+            }
             if (config.devMode)
                 log.Information("[AutoPalExplorer] 检测到宝箱 BaseId={BaseId}, 位置=({X:0.00},{Y:0.00},{Z:0.00}), Targetable={Targetable}",
                     chest.BaseId, chest.Position.X, chest.Position.Y, chest.Position.Z, chest.IsTargetable);
@@ -505,6 +578,8 @@ public sealed class AutoPalController
                     log.Information("[AutoPalExplorer] TryOpenChest：TargetSystem 实例为空。");
                 return;
             }
+
+            lastChestInteractObjectId = chest.GameObjectId;
 
             ts->InteractWithObject(ptr, false);
             lastChestInteractAt = now;
@@ -946,6 +1021,8 @@ public sealed class AutoPalController
         return best;
     }
 
+    private bool IsIgnoredChest(IGameObject chest)
+        => ignoredChestIds.Contains(chest.GameObjectId);
     private unsafe void TryClickNextPilgrim()
     {
         try
@@ -964,4 +1041,24 @@ public sealed class AutoPalController
         }
     }
 
+    /// <summary>
+    /// 当收到“无法获得更多的魔陶器：xxx 被重新放回宝箱中……”的聊天提示时调用。
+    /// 把最近一次尝试交互的宝箱加入忽略列表，避免在该层无限尝试。
+    /// </summary>
+    public void NotifyChestPomanderOverflow()
+    {
+        if (lastChestInteractObjectId == 0)
+        {
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] PomanderOverflow：没有记录到最近交互的宝箱ID，忽略。");
+            return;
+        }
+
+        if (ignoredChestIds.Add(lastChestInteractObjectId))
+        {
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] PomanderOverflow：将 GameObjectId={Id} 加入忽略宝箱列表。",
+                    lastChestInteractObjectId);
+        }
+    }
 }

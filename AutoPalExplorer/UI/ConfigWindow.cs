@@ -70,13 +70,24 @@ namespace AutoPalExplorer
                 if (ImGui.Button("Start##autopal"))
                     controller.Start();
             }
+            
+            ImGui.Separator();
+            ImGui.TextUnformatted("模式设置:");
+
+            int modeIndex = (int)config.Mode;
+            string[] modeLabels = { "自动探索模式", "跟车模式" };
+            if (ImGui.Combo("自动化模式", ref modeIndex, modeLabels, modeLabels.Length))
+            {
+                config.Mode = (AutoMode)modeIndex;
+                config.Save();
+            }
 
             ImGui.Separator();
             ImGui.TextUnformatted("战斗设置:");
 
             // BMRAI 控制
             bool useBmrai = config.UseBmrai;
-            if (ImGui.Checkbox("用BossMod和Rotation来自动打怪", ref useBmrai))
+            if (ImGui.Checkbox("自动使用BossMod/Rotation", ref useBmrai))
             {
                 config.UseBmrai = useBmrai;
                 config.Save();

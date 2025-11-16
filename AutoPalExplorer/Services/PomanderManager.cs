@@ -204,7 +204,7 @@ public sealed class PomanderManager
             {
                 float hpPercent = (float)currentHp / maxHp;
 
-                if (hpPercent <= 0.40f)
+                if (hpPercent <= 0.50f)
                 {
                     var inCombat = condition[ConditionFlag.InCombat];
                     if (inCombat)

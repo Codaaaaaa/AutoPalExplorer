@@ -100,14 +100,14 @@ public sealed class AutoPalController
         isBossFloor = false;
         ignoredChestIds.Clear();
         lastChestInteractObjectId = 0;
+        // 跟车
+        wasInCombatOnBossFloor = false;
 
-        // 跟车模式
-        // wasInCombatOnBossFloor = false;
+        if (IsFollowMode)
+        {
+            StartFollowLoop();
+        }
 
-        // if (IsFollowMode)
-        // {
-        //     StartFollowLoop();
-        // }
         if (config.devMode)
             log.Information("[AutoPalExplorer] 已启动，当前地城 Territory={TerritoryType}。", clientState.TerritoryType);
     }
@@ -126,6 +126,9 @@ public sealed class AutoPalController
         EnsureBmraiOff();
         ignoredChestIds.Clear();
         lastChestInteractObjectId = 0;
+        // 跟车
+        wasInCombatOnBossFloor = false;
+        TryChatCommand("123456789987654321");
 
         if (config.devMode)
             log.Information("[AutoPalExplorer] 已停止。");
@@ -160,6 +163,11 @@ public sealed class AutoPalController
         isBossFloorQueueing = false;
         hasOpenedNextPilgrimWindow = false;
         nextChallengeAttemptAt = DateTime.MinValue;
+        wasInCombatOnBossFloor = false;
+        if (IsFollowMode)
+        {
+            TryChatCommand("123456789987654321");
+        }
 
         if (config.devMode)
             log.Information("[AutoPalExplorer] 检测到 Boss 层聊天提示，启用 Boss 房逻辑。");
@@ -172,9 +180,15 @@ public sealed class AutoPalController
         isBossFloorQueueing = false;
         hasOpenedNextPilgrimWindow = false;
         nextChallengeAttemptAt = DateTime.MinValue;
+        wasInCombatOnBossFloor = false;
 
         if (config.devMode)
             log.Information("[AutoPalExplorer] 收到成功发送参加申请提示，结束 Boss 流程逻辑。");
+        
+        if (IsFollowMode && IsRunning)
+        {
+            StartFollowLoop();
+        }
     }
 
     public void Update()
@@ -199,6 +213,7 @@ public sealed class AutoPalController
             return;
         }
 
+        var inCombat = condition[ConditionFlag.InCombat];
         var pos = player.Position;
         if (config.devMode)
         {
@@ -220,22 +235,48 @@ public sealed class AutoPalController
             EnsureBmraiOff();
             ignoredChestIds.Clear();
             lastChestInteractObjectId = 0;
+            // 跟车
+            wasInCombatOnBossFloor = false;
 
             if (config.devMode)
                 log.Information("[AutoPalExplorer] 检测到换层，已重置状态 (Territory={Territory}).", clientState.TerritoryType);
         }
 
         // 0.5 检测状态并且使用魔陶器
-        if (!isBossFloor && !isBossFloorQueueing)
-            pomanderManager.UsingPomander();
+        if (!IsFollowMode)
+        {
+            // 跟车模式不使用魔陶器
+            if (!isBossFloor && !isBossFloorQueueing)
+                pomanderManager.UsingPomander();
+        }
         
         // 1. 战斗状态：交给 BMRAI，暂停导航
-        var inCombat = condition[ConditionFlag.InCombat];
+        if (IsFollowMode && isBossFloor)
+        {
+            if (inCombat)
+            {
+                // Boss 战中
+                EnsureBmraiOn();
+                wasInCombatOnBossFloor = true;
+            }
+            else if (wasInCombatOnBossFloor)
+            {
+                // 刚刚从 Boss 战中脱战：关闭 BMRAI/Rotation
+                wasInCombatOnBossFloor = false;
+                EnsureBmraiOff();
+
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] 跟车模式：Boss 战结束，已关闭 BMRAI 和 Rotation。");
+            }
+        }
+
+        // 1. 战斗状态：交给 BMRAI，暂停导航
         if (inCombat)
         {
             if (config.devMode)
                 log.Information("[AutoPalExplorer] 当前处于战斗中，交给 BMRAI 处理移动/战斗。");
 
+            // 非跟车模式：按原逻辑自动开 BMRAI
             if (!bmraiOn)
                 EnsureBmraiOn();
 
@@ -247,12 +288,22 @@ public sealed class AutoPalController
         }
         else
         {
+            // 非跟车模式：按原逻辑离战斗就关 BMRAI
             if (bmraiOn)
             {
                 if (config.devMode)
                     log.Information("[AutoPalExplorer] 脱离战斗，关闭 BMRAI。");
                 EnsureBmraiOff();
             }
+            // 跟车模式：BMRAI 的开关由 StartFollowLoop / Boss 战结束那段逻辑控制，这里不动
+        }
+
+        // 跟车模式：非 Boss 楼层不执行任何探索逻辑，直接返回
+        if (IsFollowMode && !isBossFloor && !isBossFloorQueueing)
+        {
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] 跟车模式：非 Boss 楼层，跳过自动探索逻辑。");
+            return;
         }
 
         // 1.1 是否进入boss房间
@@ -267,8 +318,21 @@ public sealed class AutoPalController
         {
             pomanderManager.ResetBuff();
             pomanderManager.ResetBuriedBuff();
-            if (HandleBossFloorQueueing(pos))
-                return; // 队列逻辑接管
+
+            if (!IsFollowMode)
+            {
+                // 原来的自动排队行为
+                if (HandleBossFloorQueueing(pos))
+                    return;
+            }
+            else
+            {
+                // EnsureBmraiOff();
+                // 跟车模式：Queue 楼层什么都不做，等聊天出现“成功发送了参加申请”
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] [Boss层] [Queue] 跟车模式：暂停所有排队逻辑，等待参加申请结果。");
+                return;
+            }
         }
 
         // 2. 更新导航 & 目标检测
@@ -702,6 +766,8 @@ public sealed class AutoPalController
             var distSq = ex * ex + ez * ez;
             var dist = MathF.Sqrt(distSq);
 
+            EnsureBmraiOff();
+
             if (config.devMode)
                 log.Information("[AutoPalExplorer] [Boss层] 找到出口(2005809)，距离={Dist:0.00}。", dist);
 
@@ -721,9 +787,13 @@ public sealed class AutoPalController
                 // 已到出口旁边，尝试交互
                 TryInteractWithObject(exitObj, "Boss层出口");
                 // 可选：交互后清掉 Boss 标记，避免下一层误用
-                isBossFloorQueueing = true;
+                if (MapIds.IsWaitingRoom(clientState.TerritoryType))
+                {
+                    isBossFloorQueueing = true;
+                }
+                // isBossFloorQueueing = true;
                 nextChallengeAttemptAt = DateTime.UtcNow.AddSeconds(ChallengeIntervalSeconds);
-
+                
                 if (config.devMode)
                     log.Information("[AutoPalExplorer] [Boss层] 已与 Boss 出口交互，进入挑战下一朝圣路流程。");
             }
@@ -1061,4 +1131,34 @@ public sealed class AutoPalController
                     lastChestInteractObjectId);
         }
     }
+
+    private void StartFollowLoop()
+    {
+        // TryCommand("/follow <2>");
+        TryChatCommand("ygf2start");
+
+        if (config.UseBmrai)
+        {
+            EnsureBmraiOn();
+        }
+
+        if (config.devMode)
+            log.Information("[AutoPalExplorer] 跟车模式：已发送 /follow <2> + /bmrai on + /rotation Auto");
+    }
+
+    private void TryChatCommand(string text)
+    {
+        try
+        {
+            Plugin.ChatGui.Print(text);
+
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] 发送聊天命令：{Cmd}", text);
+        }
+        catch (Exception ex)
+        {
+            log.Warning($"[AutoPalExplorer] 发送聊天命令失败 '{text}': {ex.Message}");
+        }
+    }
+
 }

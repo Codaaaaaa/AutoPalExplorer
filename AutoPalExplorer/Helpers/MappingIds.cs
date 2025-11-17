@@ -36,12 +36,22 @@ namespace AutoPalExplorer.Helpers
             PilgrimsTraverse9
         };
 
+        public static readonly HashSet<uint> WaitingRooms = new()
+        {
+            WaitingRoom,
+        };
+
         /// <summary>
         /// 判断是否在妖宫地图中
         /// </summary>
         public static bool IsPilgrimsTraverse(uint mapId)
         {
             return AllPilgrimsTraverse.Contains(mapId);
+        }
+
+        public static bool IsWaitingRoom(uint mapId)
+        {
+            return WaitingRooms.Contains(mapId);
         }
     }
 }

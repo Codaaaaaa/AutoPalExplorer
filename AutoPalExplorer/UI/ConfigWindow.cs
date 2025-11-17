@@ -75,7 +75,7 @@ namespace AutoPalExplorer
             ImGui.TextUnformatted("模式设置:");
 
             int modeIndex = (int)config.Mode;
-            string[] modeLabels = { "自动探索模式", "跟车模式" };
+            string[] modeLabels = { "车头模式", "跟车模式" };
             if (ImGui.Combo("自动化模式", ref modeIndex, modeLabels, modeLabels.Length))
             {
                 config.Mode = (AutoMode)modeIndex;

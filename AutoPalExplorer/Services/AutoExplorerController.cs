@@ -38,6 +38,8 @@ public sealed class AutoPalController
     private bool isBossFloor;
     private bool isBossFloorQueueing;
     private double ChallengeIntervalSeconds => MathF.Max(1.0f, config.ChallengeIntervalSeconds);
+    private readonly double BossExitInteractDelaySeconds = 8.0;
+    private DateTime bossExitReachedAt = DateTime.MinValue;
     private DateTime nextChallengeAttemptAt = DateTime.MinValue;
     private float EnemySearchRadius => MathF.Max(1.0f, config.EnemySearchRadius);
     private float TrapAvoidRadiusCfg => MathF.Max(0.1f, config.TrapAvoidRadius);
@@ -98,8 +100,10 @@ public sealed class AutoPalController
         navigator.Stop();
         EnsureBmraiOff();
         isBossFloor = false;
+        isBossFloorQueueing = false;
         ignoredChestIds.Clear();
         lastChestInteractObjectId = 0;
+        bossExitReachedAt = DateTime.MinValue;
         // 跟车
         wasInCombatOnBossFloor = false;
 
@@ -126,6 +130,9 @@ public sealed class AutoPalController
         EnsureBmraiOff();
         ignoredChestIds.Clear();
         lastChestInteractObjectId = 0;
+        isBossFloor = false;
+        isBossFloorQueueing = false;
+        bossExitReachedAt = DateTime.MinValue;
         // 跟车
         wasInCombatOnBossFloor = false;
         TryChatCommand("123456789987654321");
@@ -154,6 +161,7 @@ public sealed class AutoPalController
     {
         nextLevelBool = true;
         hasOpenedNextPilgrimWindow = false;
+        bossExitReachedAt = DateTime.MinValue;
         if (config.devMode)
             log.Information("[AutoPalExplorer] 标记换层（nextLevelActivated）。");
     }
@@ -162,6 +170,7 @@ public sealed class AutoPalController
         isBossFloor = true;
         isBossFloorQueueing = false;
         hasOpenedNextPilgrimWindow = false;
+        bossExitReachedAt = DateTime.MinValue;
         nextChallengeAttemptAt = DateTime.MinValue;
         wasInCombatOnBossFloor = false;
         if (IsFollowMode)
@@ -179,6 +188,7 @@ public sealed class AutoPalController
         isBossFloor = false;
         isBossFloorQueueing = false;
         hasOpenedNextPilgrimWindow = false;
+        bossExitReachedAt = DateTime.MinValue;
         nextChallengeAttemptAt = DateTime.MinValue;
         wasInCombatOnBossFloor = false;
 
@@ -781,21 +791,41 @@ public sealed class AutoPalController
                     if (config.devMode)
                         log.Information("[AutoPalExplorer] [Boss层] 导航至出口(2005809)。");
                 }
+
+                bossExitReachedAt = DateTime.MinValue;
             }
             else
             {
-                // 已到出口旁边，尝试交互
+                if (bossExitReachedAt == DateTime.MinValue)
+                {
+                    // 第一次进入出口范围，记录时间
+                    bossExitReachedAt = DateTime.UtcNow;
+                    if (config.devMode)
+                        log.Information("[AutoPalExplorer] [Boss层] 已到出口旁边，开始等待 {Delay}s 后再交互。",
+                            BossExitInteractDelaySeconds);
+                    return true;
+                }
+
+                var now = DateTime.UtcNow;
+                var wait = now - bossExitReachedAt;
+                if (wait.TotalSeconds < BossExitInteractDelaySeconds)
+                {
+                    // 还没等够 8 秒，啥也不做
+                    if (config.devMode)
+                        log.Information("[AutoPalExplorer] [Boss层] 已到出口旁边，已等待 {Elapsed:0.0}s / {Delay:0.0}s，继续等待。",
+                            wait.TotalSeconds, BossExitInteractDelaySeconds);
+                    return true;
+                }
+
+                // 等够了，真正交互出口
                 TryInteractWithObject(exitObj, "Boss层出口");
-                // 可选：交互后清掉 Boss 标记，避免下一层误用
-                // if (MapIds.IsWaitingRoom(clientState.TerritoryType))
-                // {
-                //     isBossFloorQueueing = true;
-                // }
                 isBossFloorQueueing = true;
                 nextChallengeAttemptAt = DateTime.UtcNow.AddSeconds(ChallengeIntervalSeconds);
-                
+                bossExitReachedAt = DateTime.MinValue; // 用完重置
+
                 if (config.devMode)
-                    log.Information("[AutoPalExplorer] [Boss层] 已与 Boss 出口交互，进入挑战下一朝圣路流程。");
+                    log.Information("[AutoPalExplorer] [Boss层] 等待 {Delay}s 后已与 Boss 出口交互，进入挑战下一朝圣路流程。",
+                        BossExitInteractDelaySeconds);
             }
 
             return true;

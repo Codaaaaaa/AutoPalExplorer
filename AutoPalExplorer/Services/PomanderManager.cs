@@ -36,7 +36,7 @@ public sealed class PomanderManager
     private readonly List<PomanderEntry> pomanders = new();
     private long lastCheckTick = 0;
     private bool hasBuriedBuff = false;
-
+    public bool HasBuriedBuff => hasBuriedBuff;
     public PomanderManager(IClientState clientState, IPluginLog log, ICommandManager commandManager, Configuration config, IChatGui chatGui, ICondition condition)
     {
         this.clientState = clientState;

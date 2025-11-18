@@ -6,6 +6,7 @@ using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
+using Dalamud.Interface.Textures.TextureWraps;
 using System.Numerics;
 using System.Collections.Generic;
 using Dalamud.Interface;
@@ -34,6 +35,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IGameInteropProvider GameInteropProvider { get; private set; } = null!;
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
     [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
+    [PluginService] internal static ITextureProvider TextureProvider { get; private set; } = null!;
 
     private readonly Configuration config;
     private readonly AutoPalController controller;
@@ -41,12 +43,15 @@ public sealed class Plugin : IDalamudPlugin
     private readonly PomanderManager pomanderManager;
     private PomanderDebuggerEx? pomanderDebuggerEx;
     private UiSniffer? uiSniffer;
-
+    private readonly bool isAllowed;
     // ⭐ 新增：UI 封装类
     private readonly ConfigWindow configWindow;
 
     public Plugin()
     {
+        // 白名单检查
+        isAllowed = WhiteListCheck.IsPlayerAllowed(ClientState);
+
         // 加载配置
         config = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         config.Initialize(PluginInterface);
@@ -73,10 +78,9 @@ public sealed class Plugin : IDalamudPlugin
         );
         objectIdOverlay = new ObjectIdOverlay(ObjectTable, GameGui, config);
         uiSniffer = new UiSniffer(AddonLifecycle, Log);
-
         // ⭐ 实例化配置窗口
         configWindow = new ConfigWindow(config, controller, pomanderManager);
-
+        
         CommandManager.AddHandler("/uiwatch", new CommandInfo(OnUiWatch)
         {
             HelpMessage = "Log addon names/types (usage: /uiwatch on | off)"
@@ -87,7 +91,7 @@ public sealed class Plugin : IDalamudPlugin
         // 注册命令
         CommandManager.AddHandler(Command, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Auto Palace explorer. /autopal [start|stop|toggle]"
+            HelpMessage = "Explorer. /autopal [start|stop|toggle]"
         });
 
         // 注册UI
@@ -111,12 +115,15 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnUiWatch(string cmd, string args)
     {
-        if (string.Equals(args, "on", StringComparison.OrdinalIgnoreCase))
-            uiSniffer?.Enable();
-        else if (string.Equals(args, "off", StringComparison.OrdinalIgnoreCase))
-            uiSniffer?.Disable();
-        else
-            Log.Information("Usage: /uiwatch on | off");
+        if (isAllowed)
+        {
+            if (string.Equals(args, "on", StringComparison.OrdinalIgnoreCase))
+                uiSniffer?.Enable();
+            else if (string.Equals(args, "off", StringComparison.OrdinalIgnoreCase))
+                uiSniffer?.Disable();
+            else
+                Log.Information("Usage: /uiwatch on | off");
+        }
     }
 
     private void OnFrameworkUpdate(IFramework framework)
@@ -128,46 +135,49 @@ public sealed class Plugin : IDalamudPlugin
     private void OnCommand(string command, string args)
     {
         var arg = args.Trim().ToLowerInvariant();
-
-        switch (arg)
+        if (isAllowed)
         {
-            case "start":
-                controller.Start();
-                ChatGui.Print("[AutoPalExplorer] Started.");
-                break;
-
-            case "stop":
-                controller.Stop();
-                ChatGui.Print("[AutoPalExplorer] Stopped.");
-                break;
-
-            case "config":
-                // ⭐ 打开配置窗口
-                configWindow.Open();
-                break;
-
-            case "toggle":
-            case "debug":
-                PomanderDebugger.DumpPomanderSheets(DataManager, Log);
-                break;
-
-            case "":
-                if (controller.IsRunning)
-                {
-                    controller.Stop();
-                    ChatGui.Print("[AutoPalExplorer] Stopped.");
-                }
-                else
-                {
+            switch (arg)
+            {
+                case "start":
                     controller.Start();
                     ChatGui.Print("[AutoPalExplorer] Started.");
-                }
-                break;
+                    break;
 
-            default:
-                ChatGui.Print("[AutoPalExplorer] Usage: /autopal [start|stop|toggle]");
-                break;
+                case "stop":
+                    controller.Stop();
+                    ChatGui.Print("[AutoPalExplorer] Stopped.");
+                    break;
+
+                case "config":
+                    // ⭐ 打开配置窗口
+                    configWindow.Open();
+                    break;
+
+                case "toggle":
+                case "debug":
+                    PomanderDebugger.DumpPomanderSheets(DataManager, Log);
+                    break;
+
+                case "":
+                    if (controller.IsRunning)
+                    {
+                        controller.Stop();
+                        ChatGui.Print("[AutoPalExplorer] Stopped.");
+                    }
+                    else
+                    {
+                        controller.Start();
+                        ChatGui.Print("[AutoPalExplorer] Started.");
+                    }
+                    break;
+
+                default:
+                    ChatGui.Print("[AutoPalExplorer] Usage: /autopal [start|stop|toggle]");
+                    break;
+            }
         }
+        
     }
 
     private void OnChatMessage(
@@ -203,6 +213,14 @@ public sealed class Plugin : IDalamudPlugin
             if (config.devMode)
                 Log.Information("发现了埋藏的宝藏");
             controller.NotifyBuriedtActivated();
+            // pomanderManager.NotifyBuriedtBuff();
+        }
+
+        if (text.Contains("可以感知到宝藏埋藏的位置了", StringComparison.OrdinalIgnoreCase))
+        {
+            if (config.devMode)
+                Log.Information("可以感知到宝藏埋藏的位置了");
+            // controller.NotifyBuriedtActivated();
             pomanderManager.NotifyBuriedtBuff();
         }
 
@@ -256,7 +274,15 @@ public sealed class Plugin : IDalamudPlugin
 
     private void DrawUi()
     {
-        objectIdOverlay.Draw();
-        configWindow.Draw();
+        if (isAllowed)
+        {
+            objectIdOverlay.Draw();
+            configWindow.Draw();
+        }
+        else
+        {
+            // Log.Information("Test");
+            configWindow.DrawSimple();
+        }
     }
 }

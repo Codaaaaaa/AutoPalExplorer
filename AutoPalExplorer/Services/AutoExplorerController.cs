@@ -787,11 +787,11 @@ public sealed class AutoPalController
                 // 已到出口旁边，尝试交互
                 TryInteractWithObject(exitObj, "Boss层出口");
                 // 可选：交互后清掉 Boss 标记，避免下一层误用
-                if (MapIds.IsWaitingRoom(clientState.TerritoryType))
-                {
-                    isBossFloorQueueing = true;
-                }
-                // isBossFloorQueueing = true;
+                // if (MapIds.IsWaitingRoom(clientState.TerritoryType))
+                // {
+                //     isBossFloorQueueing = true;
+                // }
+                isBossFloorQueueing = true;
                 nextChallengeAttemptAt = DateTime.UtcNow.AddSeconds(ChallengeIntervalSeconds);
                 
                 if (config.devMode)

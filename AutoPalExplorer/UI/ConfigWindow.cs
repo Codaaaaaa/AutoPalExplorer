@@ -3,6 +3,9 @@ using System.Numerics;
 using Dalamud.Interface;
 using Dalamud.Bindings.ImGui;
 using FFXIVClientStructs.FFXIV.Component.GUI;
+using System.Net.Http;
+using System.Threading.Tasks;
+using Dalamud.Interface.Textures.TextureWraps;
 using AutoPalExplorer.Services;
 using AutoPalExplorer.Helpers;
 
@@ -16,8 +19,10 @@ namespace AutoPalExplorer
         private readonly Configuration config;
         private readonly AutoPalController controller;
         private readonly PomanderManager pomanderManager;
-
         private bool isVisible = false;
+        private IDalamudTextureWrap? logoTexture;
+        private bool logoLoadStarted = false;   
+        private string? logoError;
 
         public ConfigWindow(Configuration config, AutoPalController controller, PomanderManager pomanderManager)
         {
@@ -247,11 +252,84 @@ namespace AutoPalExplorer
             if (ImGui.CollapsingHeader("玩家 Buff 状态（只读）", ImGuiTreeNodeFlags.DefaultOpen))
             {
                 DrawPlayerStatusList();
-            }
+                
+                ImGui.Spacing();
+                ImGui.Separator();
+                
+                bool buried = pomanderManager.HasBuriedBuff;
+                ImGui.TextUnformatted("埋藏宝藏 Buff 状态：");
+
+                if (buried)
+                    ImGui.TextColored(new Vector4(0.2f, 1.0f, 0.2f, 1.0f), "已获得");
+                else
+                    ImGui.TextColored(new Vector4(1.0f, 0.3f, 0.3f, 1.0f), "未获得");
+                        }
 
             ImGui.End();
         }
 
+        public void DrawSimple()
+        {
+            // 如果没打开，不画
+            if (!isVisible)
+                return;
+
+            // 构造一个更小的窗口大小
+            ImGui.SetNextWindowSize(new Vector2(300, 120), ImGuiCond.FirstUseEver);
+
+            if (!ImGui.Begin("dadongbei", ref isVisible))
+            {
+                ImGui.End();
+                return;
+            }
+
+            if (!logoLoadStarted)
+            {
+                logoLoadStarted = true;
+                _ = LoadLogoAsync(); // fire-and-forget，不阻塞游戏线程
+            }
+            if (logoTexture != null)
+            {
+                // 按宽度缩放一下，保持比例
+                var size = logoTexture.Size;
+                const float maxWidth = 260f;
+                if (size.X > maxWidth)
+                {
+                    float scale = maxWidth / size.X;
+                    size *= scale;
+                }
+
+                ImGui.Image(logoTexture.Handle, size);
+                ImGui.Separator();
+            }
+            else if (!string.IsNullOrEmpty(logoError))
+            {
+                ImGui.TextColored(new Vector4(1.0f, 0.3f, 0.3f, 1.0f), logoError);
+                ImGui.Separator();
+            }
+            else
+            {
+                ImGui.TextUnformatted("正在加载...");
+                ImGui.Separator();
+            }
+
+            var player = Plugin.ClientState.LocalPlayer;
+            if (player == null)
+            {
+                ImGui.TextUnformatted("玩家未加载");
+                ImGui.End();
+                return;
+            }
+
+            // 获取 LocalContentId
+            var cid = Plugin.ClientState.LocalContentId;
+
+            ImGui.TextUnformatted("当前角色 LocalContentId:");
+            ImGui.Spacing();
+            ImGui.TextColored(new Vector4(0.3f, 0.8f, 1.0f, 1.0f), cid.ToString());
+
+            ImGui.End();
+        }
         private void DrawPlayerStatusList()
         {
             var player = Plugin.ClientState.LocalPlayer;
@@ -315,6 +393,26 @@ namespace AutoPalExplorer
             }
         }
 
+        private async Task LoadLogoAsync()
+        {
+            try
+            {
+                using var http = new HttpClient();
+                var bytes = await http
+                    .GetByteArrayAsync("https://raw.githubusercontent.com/Codaaaaaa/Pal/main/logo.png")
+                    .ConfigureAwait(false);
+
+                // CreateFromImageAsync 支持 png/jpg/tex 等常见格式
+                logoTexture = await Plugin.TextureProvider
+                    .CreateFromImageAsync(bytes, "AutoPalExplorer Logo")
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.Error(ex, "Failed to load logo texture.");
+                logoError = "加载 logo 失败 (看 console 详情)";
+            }
+        }
 
     }
 }

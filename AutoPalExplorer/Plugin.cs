@@ -211,6 +211,13 @@ public sealed class Plugin : IDalamudPlugin
             controller.NotifyExitActivated();
         }
 
+        if (text.Contains("再生祭坛开始散发光辉", StringComparison.OrdinalIgnoreCase))
+        {
+            if (config.devMode)
+                Log.Information("再生祭坛激活");
+            controller.NotifyRegenerationActivated();
+        }
+
         if (text.Contains("发现了埋藏的宝藏！", StringComparison.OrdinalIgnoreCase))
         {
             if (config.devMode)

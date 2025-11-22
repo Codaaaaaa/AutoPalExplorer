@@ -35,6 +35,11 @@ public sealed class AutoPalController
     private uint lastTerritoryType;
     private bool hasOpenBurinedChest = false;
     private DateTime lastChestInteractAt = DateTime.MinValue;
+    // 记录传送装置 / 再生祭坛坐标 & 激活状态
+    private Vector3? savedExitPos;
+    private Vector3? savedRegenerationPos;
+    private bool exitActivatedByChat;
+    private bool regenerationActivated;
     private float ExitStopRadius => MathF.Max(0.1f, config.ExitStopRadius);
     private float ChestDoneRadius => MathF.Max(0.1f, config.ChestDoneRadius);
     private float BuriedChestDoneRadius => MathF.Max(0.1f, config.BuriedChestDoneRadius);
@@ -134,6 +139,7 @@ public sealed class AutoPalController
         lastChestInteractObjectId = 0;
         bossExitReachedAt = DateTime.MinValue;
         ResetBlindWalkState();
+        ResetStaticObjectsState();
         // 跟车
         wasInCombatOnBossFloor = false;
 
@@ -164,6 +170,7 @@ public sealed class AutoPalController
         isBossFloorQueueing = false;
         bossExitReachedAt = DateTime.MinValue;
         ResetBlindWalkState();
+        ResetStaticObjectsState();
         // 跟车
         wasInCombatOnBossFloor = false;
         TryChatCommand("123456789987654321");
@@ -177,10 +184,19 @@ public sealed class AutoPalController
     /// </summary>
     public void NotifyExitActivated()
     {
+        exitActivatedByChat = true;
         exitDetector.MarkExitActivated();
         if (config.devMode)
             log.Information("[AutoPalExplorer] 收到传送装置激活通知。");
     }
+
+    public void NotifyRegenerationActivated()
+    {
+        regenerationActivated = true;
+        if (config.devMode)
+            log.Information("[AutoPalExplorer] 收到再生祭坛激活通知。");
+    }
+
 
     public void NotifyBuriedtActivated()
     {
@@ -262,6 +278,8 @@ public sealed class AutoPalController
                 clientState.TerritoryType, pos.X, pos.Y, pos.Z, bmraiOn, navigator.IsBusy);
         }
 
+        UpdateStaticObjectPositions();
+
         // Territory 变化 / 换层重置（由 nextLevelBool 控制）
         if (nextLevelBool)
         {
@@ -277,6 +295,7 @@ public sealed class AutoPalController
             ignoredChestIds.Clear();
             lastChestInteractObjectId = 0;
             ResetBlindWalkState();
+            ResetStaticObjectsState();
             // 跟车
             wasInCombatOnBossFloor = false;
 
@@ -390,6 +409,62 @@ public sealed class AutoPalController
                 currentTarget is null ? "null" : $"({currentTarget.Value.X:0.00},{currentTarget.Value.Y:0.00},{currentTarget.Value.Z:0.00})");
         }
 
+        // ==== 2.1 再生祭坛（已激活 + 队友死亡） ====
+        if (regenerationActivated && HasDeadOtherPlayer())
+        {
+            // 优先尝试拿当前场景中的祭坛对象，并更新缓存坐标
+            IGameObject? regenObj = null;
+            foreach (var obj in objectTable)
+            {
+                if (obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventObj)
+                    continue;
+
+                if (!ObjectIds.regenerationIds.Contains(obj.BaseId))
+                    continue;
+
+                regenObj = obj;
+                savedRegenerationPos = obj.Position;
+                break;
+            }
+
+            Vector3? regenPos = regenObj?.Position ?? savedRegenerationPos;
+            if (regenPos is { } rp)
+            {
+                var dxR = rp.X - pos.X;
+                var dzR = rp.Z - pos.Z;
+                var distSqR = dxR * dxR + dzR * dzR;
+                var distR = MathF.Sqrt(distSqR);
+
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] 再生祭坛已激活且有队友阵亡，距离祭坛={Dist:0.00}。", distR);
+
+                // 到点附近：停下并尝试交互
+                if (distSqR <= ChestDoneRadius * ChestDoneRadius)
+                {
+                    if (navigator.IsBusy)
+                        navigator.Stop();
+
+                    if (regenObj is not null && regenObj.IsTargetable)
+                    {
+                        TryInteractWithObject(regenObj, "再生祭坛");
+                    }
+
+                    // 本帧由再生祭坛逻辑接管
+                    return;
+                }
+
+                // 不在范围内：导航过去（带简单避陷阱）
+                if (!navigator.IsBusy || IsDifferentTarget(currentTarget, rp, 1.0f))
+                {
+                    if (config.devMode)
+                        log.Information("[AutoPalExplorer] 导航至再生祭坛。");
+
+                    TrySafeMoveTo(rp, TrapAvoidRadiusCfg);
+                }
+
+                return;
+            }
+        }
         // 3. 优先级决策
         // ==== 3.0 埋藏的宝藏（最高优先级） ====
         var buried = FindNearestBuriedChest(pos, 500f);
@@ -451,114 +526,34 @@ public sealed class AutoPalController
         }
         
         // ==== 3.1 宝箱（优先度：有就去） ====
-        if (exitDetector.HasChest && exitDetector.Chest is { } chest)
+        if (FindNextChestToOpen(pos) is { } chest)
         {
-            if (IsIgnoredChest(chest))
-            {
-                if (config.devMode)
-                    log.Information("[AutoPalExplorer] 宝箱 BaseId={BaseId}, GameObjectId={Id} 在忽略列表中，跳过。",
-                        chest.BaseId, chest.GameObjectId);
-            }
-            else
-            {
-                if (config.devMode)
-                log.Information("[AutoPalExplorer] 检测到宝箱 BaseId={BaseId}, 位置=({X:0.00},{Y:0.00},{Z:0.00}), Targetable={Targetable}",
-                    chest.BaseId, chest.Position.X, chest.Position.Y, chest.Position.Z, chest.IsTargetable);
-
-                if (!ShouldOpenChest(chest.BaseId))
-                {
-                    if (config.devMode)
-                        log.Information("[AutoPalExplorer] 配置不允许当前类型宝箱，跳过。");
-                }
-                else if (chest.IsTargetable)
-                {
-                    var dx = chest.Position.X - pos.X;
-                    var dz = chest.Position.Z - pos.Z;
-                    var distSq = dx * dx + dz * dz;
-
-                    if (distSq > ChestDoneRadius * ChestDoneRadius)
-                    {
-                        if (config.devMode)
-                            log.Information("[AutoPalExplorer] 前往宝箱中，当前距离={Dist:0.00} (> {R})。",
-                                MathF.Sqrt(distSq), ChestDoneRadius);
-
-                        if (IsDifferentTarget(currentTarget, chest.Position, 1.0f))
-                        {
-                            if (config.devMode)
-                                log.Information("[AutoPalExplorer] 切换导航目标为宝箱。");
-                            navigator.Stop();
-                            navigator.TryMoveTo(chest.Position);
-                        }
-                        return;
-                    }
-                    else
-                    {
-                        if (config.devMode)
-                            log.Information("[AutoPalExplorer] 已到宝箱边，尝试交互开箱。");
-                        TryOpenChest(chest);
-                        // 不 return，让后续逻辑继续，看是否有门/怪
-                    }
-                }
-                else
-                {
-                    if (config.devMode)
-                        log.Information("[AutoPalExplorer] 宝箱目前不可交互 (可能已开/动画中)，跳过。");
-                }
-            }
-            if (config.devMode)
-                log.Information("[AutoPalExplorer] 检测到宝箱 BaseId={BaseId}, 位置=({X:0.00},{Y:0.00},{Z:0.00}), Targetable={Targetable}",
-                    chest.BaseId, chest.Position.X, chest.Position.Y, chest.Position.Z, chest.IsTargetable);
-
-            if (!ShouldOpenChest(chest.BaseId))
-            {
-                if (config.devMode)
-                    log.Information("[AutoPalExplorer] 配置不允许当前类型宝箱，跳过。");
-            }
-            else if (chest.IsTargetable)
-            {
-                var dx = chest.Position.X - pos.X;
-                var dz = chest.Position.Z - pos.Z;
-                var distSq = dx * dx + dz * dz;
-
-                if (distSq > ChestDoneRadius * ChestDoneRadius)
-                {
-                    if (config.devMode)
-                        log.Information("[AutoPalExplorer] 前往宝箱中，当前距离={Dist:0.00} (> {R})。",
-                            MathF.Sqrt(distSq), ChestDoneRadius);
-
-                    if (IsDifferentTarget(currentTarget, chest.Position, 1.0f))
-                    {
-                        if (config.devMode)
-                            log.Information("[AutoPalExplorer] 切换导航目标为宝箱。");
-                        navigator.Stop();
-                        navigator.TryMoveTo(chest.Position);
-                    }
-                    return;
-                }
-                else
-                {
-                    if (config.devMode)
-                        log.Information("[AutoPalExplorer] 已到宝箱边，尝试交互开箱。");
-                    TryOpenChest(chest);
-                    // 不 return，让后续逻辑继续，看是否有门/怪
-                }
-            }
-            else
-            {
-                if (config.devMode)
-                    log.Information("[AutoPalExplorer] 宝箱目前不可交互 (可能已开/动画中)，跳过。");
-            }
+            if (HandleChest(pos, chest, currentTarget))
+                return;
         }
 
         // ==== 3.2 激活传送装置（最高优先级） ====
+        Vector3? exitPos = null;
         if (exitDetector.HasActiveExit && exitDetector.Exit is { } activeExit)
         {
-            var dx = activeExit.Position.X - pos.X;
-            var dz = activeExit.Position.Z - pos.Z;
+            exitPos = activeExit.Position;
+            savedExitPos = activeExit.Position; // 顺便更新缓存
+        }
+        else if (exitActivatedByChat && savedExitPos is { } cachedExit)
+        {
+            // ExitDetector 找不到对象（走太远）时，用聊天激活 + 缓存坐标兜底
+            exitPos = cachedExit;
+        }
+
+        if (exitPos is { } ep)
+        {
+            var dx = ep.X - pos.X;
+            var dz = ep.Z - pos.Z;
             var distSq = dx * dx + dz * dz;
 
             if (config.devMode)
-                log.Information("[AutoPalExplorer] 检测到已激活传送装置，距离={Dist:0.00}。",
+                log.Information("[AutoPalExplorer] 使用{Source}的传送装置坐标，距离={Dist:0.00}。",
+                    exitDetector.HasActiveExit ? "当前对象" : "缓存",
                     MathF.Sqrt(distSq));
 
             if (distSq <= ExitStopRadius * ExitStopRadius)
@@ -567,17 +562,17 @@ public sealed class AutoPalController
                 {
                     navigator.Stop();
                     if (config.devMode)
-                        log.Information("[AutoPalExplorer] 已到达激活传送装置旁，停止导航等待玩家手动交互。");
+                        log.Information("[AutoPalExplorer] 已到达激活传送装置附近，停止导航等待玩家手动交互。");
                 }
                 return;
             }
 
-            if (!navigator.IsBusy || IsDifferentTarget(currentTarget, activeExit.Position, 1.0f))
+            if (!navigator.IsBusy || IsDifferentTarget(currentTarget, ep, 1.0f))
             {
                 if (config.devMode)
-                    log.Information("[AutoPalExplorer] 导航至已激活传送装置。");
+                    log.Information("[AutoPalExplorer] 导航至激活传送装置位置。");
                 navigator.Stop();
-                navigator.TryMoveTo(activeExit.Position);
+                navigator.TryMoveTo(ep);
             }
 
             return;
@@ -652,11 +647,42 @@ public sealed class AutoPalController
 
         return false;
     }
+    private void UpdateStaticObjectPositions()
+    {
+        foreach (var obj in objectTable)
+        {
+            if (obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventObj)
+                continue;
 
+            // 传送装置
+            if (ObjectIds.exitIds.Contains(obj.BaseId))
+            {
+                savedExitPos = obj.Position;
+            }
+            // 再生祭坛
+            else if (ObjectIds.regenerationIds.Contains(obj.BaseId))
+            {
+                savedRegenerationPos = obj.Position;
+            }
+        }
+    }
     private unsafe void TryOpenChest(IGameObject chest)
     {
         if (!ShouldOpenChest(chest.BaseId))
             return;
+        
+        var player = clientState.LocalPlayer;
+        if (player == null)
+            return;
+
+        foreach (var status in player.StatusList)
+        {
+            if (status.StatusId == DebuffIds.changeBuff)
+            {
+                log.Debug($"Player has change buff {status.StatusId}, skip chest.");
+                return;
+            }
+        }
 
         if (chest == null)
         {
@@ -1247,6 +1273,43 @@ public sealed class AutoPalController
         blindLastProgressPos = Vector3.Zero;
         blindLastProgressCheckAt = DateTime.MinValue;
     }
+    private void ResetStaticObjectsState()
+    {
+        savedExitPos = null;
+        savedRegenerationPos = null;
+        exitActivatedByChat = false;
+        regenerationActivated = false;
+    }
+
+    private bool HandleChest(Vector3 playerPos, IGameObject chest, Vector3? currentTarget)
+    {
+        if (IsIgnoredChest(chest))
+            return false;
+
+        if (!ShouldOpenChest(chest.BaseId))
+            return false;
+
+        if (!chest.IsTargetable)
+            return false;
+
+        var dx = chest.Position.X - playerPos.X;
+        var dz = chest.Position.Z - playerPos.Z;
+        var distSq = dx * dx + dz * dz;
+
+        if (distSq > ChestDoneRadius * ChestDoneRadius)
+        {
+            if (!navigator.IsBusy || IsDifferentTarget(currentTarget, chest.Position, 1.0f))
+            {
+                navigator.Stop();
+                navigator.TryMoveTo(chest.Position);
+            }
+            return true; // 本帧由宝箱逻辑接管
+        }
+
+        // 已在开箱半径内
+        TryOpenChest(chest);
+        return true; // 建议这里也直接 true，后面不再处理门
+    }
 
     private void EnsureBlindLocationsLoaded()
     {
@@ -1569,5 +1632,75 @@ public sealed class AutoPalController
         }
 
         return true;
+    }
+
+    private bool HasDeadOtherPlayer()
+    {
+        var localId = clientState.LocalPlayer?.GameObjectId ?? 0;
+
+        foreach (var obj in objectTable)
+        {
+            if (obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Player)
+                continue;
+
+            if (obj.GameObjectId == localId)
+                continue; // 自己死了也没法走过去，就不算在这里
+
+            if (obj is ICharacter ch && ch.IsDead)
+                return true;
+        }
+
+        return false;
+    }
+
+    private IGameObject? FindNextChestToOpen(Vector3 playerPos)
+    {
+        IGameObject? best = null;
+        var bestDistSq = float.MaxValue;
+
+        foreach (var obj in objectTable)
+        {
+            // 只看事件物件（箱子）
+            if (obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventObj)
+                continue;
+
+            // 根据配置决定开不打开这种箱子
+            if (!ShouldOpenChest(obj.BaseId))
+                continue;
+
+            var dx = obj.Position.X - playerPos.X;
+            var dz = obj.Position.Z - playerPos.Z;
+            var distSq = dx * dx + dz * dz;
+
+            // ✅ 情况一：在开箱半径内，但已经不可交互
+            // 说明 99% 是刚开完的箱子（或者被队友开完），直接加入 ignore，避免一直把它当目标。
+            if (!obj.IsTargetable && distSq <= ChestDoneRadius * ChestDoneRadius)
+            {
+                if (ignoredChestIds.Add(obj.GameObjectId) && config.devMode)
+                {
+                    log.Information(
+                        "[AutoPalExplorer] 宝箱 BaseId={BaseId} 在 ChestDoneRadius 内且不可交互，视为已开，加入 ignore 列表。",
+                        obj.BaseId
+                    );
+                }
+                continue;
+            }
+
+            // 不可交互而且距离很远：可能是别层/奇怪残影，一律不当成候选
+            if (!obj.IsTargetable)
+                continue;
+
+            // 忽略列表里的箱子直接跳过
+            if (IsIgnoredChest(obj))
+                continue;
+
+            if (distSq < bestDistSq)
+            {
+                bestDistSq = distSq;
+                best = obj;
+            }
+        }
+
+        return best;
     }
 }

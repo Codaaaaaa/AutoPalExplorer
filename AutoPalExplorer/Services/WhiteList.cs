@@ -11,6 +11,7 @@ public static class WhiteListCheck
         "19014409517278616", // wyz
         "19014409515783759", // hly
         "19014409516971300", // fuyu
+        "19014409517529691", // didi
     ];
 
     public static bool IsPlayerAllowed(IClientState clientState)

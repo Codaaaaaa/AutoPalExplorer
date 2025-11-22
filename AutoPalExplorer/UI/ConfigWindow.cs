@@ -121,6 +121,22 @@ namespace AutoPalExplorer
                 config.OpenGoldChests = openGold;
                 config.Save();
             }
+            bool blindChests = config.BlindChests;
+            if (ImGui.Checkbox("盲踩模式", ref blindChests))
+            {
+                config.BlindChests = blindChests;
+                config.Save();
+            }
+            bool blindChestsWithTrap = config.BlindChestsWithTrap;
+            ImGui.Indent();
+            ImGui.BeginDisabled(!blindChests);
+            if (ImGui.Checkbox("狂暴盲踩(排雷)模式 慎选", ref blindChestsWithTrap))
+            {
+                config.BlindChestsWithTrap = blindChestsWithTrap;
+                config.Save();
+            }
+            ImGui.EndDisabled();
+            ImGui.Unindent();
 
             ImGui.Separator();
             ImGui.TextUnformatted("其他:");
@@ -211,6 +227,14 @@ namespace AutoPalExplorer
                     config.Save();
                 }
 
+                // 盲踩目标最大允许距离
+                float blindMaxDistance = config.BlindMaxDistance;
+                if (ImGui.DragFloat("盲踩目标最大允许距离", ref blindMaxDistance, 0.1f, 0.3f, 100.0f, "%.0f"))
+                {
+                    config.BlindMaxDistance = Math.Max(10, blindMaxDistance);
+                    config.Save();
+                }
+
                 ImGui.PopItemWidth();
             }
 
@@ -263,7 +287,20 @@ namespace AutoPalExplorer
                     ImGui.TextColored(new Vector4(0.2f, 1.0f, 0.2f, 1.0f), "已获得");
                 else
                     ImGui.TextColored(new Vector4(1.0f, 0.3f, 0.3f, 1.0f), "未获得");
-                        }
+            }
+
+            if (ImGui.CollapsingHeader("内部变量", ImGuiTreeNodeFlags.DefaultOpen))
+            {
+                
+                ImGui.Spacing();
+                ImGui.Separator();
+                
+                bool buried = pomanderManager.HasBuriedBuff;
+                ImGui.TextUnformatted("宝藏数量");
+                ImGui.TextUnformatted(controller.blindLocations.Count.ToString());
+                ImGui.TextUnformatted("所有数量");
+                ImGui.TextUnformatted(controller.allBlindLocations.Count.ToString());
+            }
 
             ImGui.End();
         }

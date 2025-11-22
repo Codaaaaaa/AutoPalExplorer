@@ -16,6 +16,11 @@ namespace AutoPalExplorer.Helpers
             2014756u, // 传送装置
         };
 
+        public static readonly HashSet<uint> regenerationIds = new()
+        {
+            2014755u, // 再生祭坛
+        };
+
         /// <summary>
         /// 宝箱 DataId（Chest）
         /// </summary>

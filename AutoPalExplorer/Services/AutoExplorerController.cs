@@ -9,6 +9,9 @@ using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.Game.Object;
 
+using System.IO;
+using SQLitePCL;
+
 using AutoPalExplorer.Helpers;
 
 namespace AutoPalExplorer.Services;
@@ -53,6 +56,32 @@ public sealed class AutoPalController
     private bool wasInCombatOnBossFloor = false;
     private bool IsFollowMode => config.Mode == AutoMode.Follow;
 
+    // 盲踩
+    private readonly HashSet<long> ignoredBlindLocations = new();   // 当前层不再去踩的坐标
+    public readonly List<Vector3> blindLocations = new();          // 当前层所有 Type=2 点
+    public readonly List<Vector3> allBlindLocations = new();          // 当前层所有点，包括陷阱
+    private uint blindLocationsTerritory = 0;                        // 这些点对应的 TerritoryType
+    private Vector3? currentBlindTarget = null;                      // 正在前往/踩的目标
+    private DateTime blindArrivedAt = DateTime.MinValue;            // 到点开始计时
+    private Vector3 blindLastProgressPos = Vector3.Zero;            // 上一次检查“卡住”时的位置
+    private DateTime blindLastProgressCheckAt = DateTime.MinValue;  // 上一次检查“卡住”的时间
+    private static bool sqliteProviderInitialized = false;
+
+    private static readonly TimeSpan BlindWaitDuration = TimeSpan.FromSeconds(3); // 在点上站 3 秒
+    private static readonly TimeSpan BlindStuckTimeout = TimeSpan.FromSeconds(2); // 2 秒没动就判定卡住
+    private const float BlindArriveRadius = 0.6f;          // 认为“到点”的半径
+    private const float BlindStuckMoveThreshold = 0.2f;    // 判定卡住时允许的移动距离（2D）
+
+    private static void EnsureSQLiteProvider()
+    {
+        if (sqliteProviderInitialized)
+            return;
+
+        // 使用 e_sqlite3 bundle 作为 provider
+        raw.SetProvider(new SQLite3Provider_e_sqlite3());
+        raw.FreezeProvider(); // 可选，但建议固定 provider，避免被改
+        sqliteProviderInitialized = true;
+    }
 
     public AutoPalController(
         IClientState clientState,
@@ -104,6 +133,7 @@ public sealed class AutoPalController
         ignoredChestIds.Clear();
         lastChestInteractObjectId = 0;
         bossExitReachedAt = DateTime.MinValue;
+        ResetBlindWalkState();
         // 跟车
         wasInCombatOnBossFloor = false;
 
@@ -133,6 +163,7 @@ public sealed class AutoPalController
         isBossFloor = false;
         isBossFloorQueueing = false;
         bossExitReachedAt = DateTime.MinValue;
+        ResetBlindWalkState();
         // 跟车
         wasInCombatOnBossFloor = false;
         TryChatCommand("123456789987654321");
@@ -245,6 +276,7 @@ public sealed class AutoPalController
             EnsureBmraiOff();
             ignoredChestIds.Clear();
             lastChestInteractObjectId = 0;
+            ResetBlindWalkState();
             // 跟车
             wasInCombatOnBossFloor = false;
 
@@ -405,6 +437,19 @@ public sealed class AutoPalController
             return; // ⭐ 有埋藏宝藏就只处理这一件事
         }
 
+        // ==== 3.0b 盲踩埋藏宝藏位置（PalacePal 数据） ====
+        // 只有在还没有“埋藏宝藏”Buff 时才盲踩；一旦有 Buff 或已经开过本层埋藏宝藏，就交回上面的 buried 逻辑
+        if (config.BlindChests)
+        {
+            if (config.devMode)
+                    log.Information("[AutoPalExplorer] 开始盲踩逻辑");
+            if (!pomanderManager.HasBuriedBuff && !hasOpenBurinedChest)
+            {
+                if (TryHandleBlindBuriedSearch(pos))
+                    return; // 被盲踩逻辑接管，本帧不走后续宝箱/门/贴墙
+            }
+        }
+        
         // ==== 3.1 宝箱（优先度：有就去） ====
         if (exitDetector.HasChest && exitDetector.Chest is { } chest)
         {
@@ -1191,4 +1236,338 @@ public sealed class AutoPalController
         }
     }
 
+    private void ResetBlindWalkState()
+    {
+        ignoredBlindLocations.Clear();
+        blindLocations.Clear();
+        allBlindLocations.Clear();
+        blindLocationsTerritory = 0;
+        currentBlindTarget = null;
+        blindArrivedAt = DateTime.MinValue;
+        blindLastProgressPos = Vector3.Zero;
+        blindLastProgressCheckAt = DateTime.MinValue;
+    }
+
+    private void EnsureBlindLocationsLoaded()
+    {
+        var territory = clientState.TerritoryType;
+
+        // 如果当前缓存的就是这个 Territory，而且已经有数据，就不用重复查
+        if (blindLocationsTerritory == territory && blindLocations.Count > 0 && allBlindLocations.Count > 0)
+            return;
+
+        blindLocations.Clear();
+        allBlindLocations.Clear();
+        blindLocationsTerritory = territory;
+        currentBlindTarget = null;
+        blindArrivedAt = DateTime.MinValue;
+        ignoredBlindLocations.Clear();
+        blindLastProgressPos = Vector3.Zero;
+        blindLastProgressCheckAt = DateTime.MinValue;
+
+        if (string.IsNullOrEmpty(config.PalacePalDbPath))
+        {
+            if (config.devMode)
+                log.Warning("[AutoPalExplorer] PalacePalDbPath 未配置，跳过盲踩坐标加载。");
+            return;
+        }
+
+        var filePath = Path.Combine(Plugin.PluginInterface.AssemblyLocation.DirectoryName!, config.PalacePalDbPath);
+        if (!Path.IsPathRooted(config.PalacePalDbPath) && !File.Exists(filePath))
+        {
+            // 如果你允许直接填绝对路径，也可以再试一次绝对路径
+            if (File.Exists(config.PalacePalDbPath))
+            {
+                filePath = config.PalacePalDbPath;
+            }
+            else
+            {
+                if (config.devMode)
+                    log.Warning("[AutoPalExplorer] PalacePal 数据库不存在：{Path}", filePath);
+                return;
+            }
+        }
+
+        try
+        {
+            EnsureSQLiteProvider();
+
+            sqlite3 db;
+            var rc = raw.sqlite3_open(filePath, out db);
+            if (rc != raw.SQLITE_OK)
+            {
+                if (config.devMode)
+                    log.Warning("[AutoPalExplorer] 打开 PalacePal DB 失败，rc={Rc}", rc);
+                // 如果 open 失败，db 可能是非 null，保险起见关一下
+                try { raw.sqlite3_close(db); } catch { }
+                return;
+            }
+
+            try
+            {
+                // -------- 第一条查询：Type = 2 -> blindLocations --------
+                {
+                    log.Warning("[AutoPalExplorer] blindLocations开始读取。", rc);
+                    var sql = $"SELECT X, Y, Z FROM Locations WHERE Type = 2 AND TerritoryType = {territory}";
+                    sqlite3_stmt stmt;
+                    rc = raw.sqlite3_prepare_v2(db, sql, out stmt);
+                    if (rc != raw.SQLITE_OK)
+                    {
+                        if (config.devMode)
+                            log.Warning("[AutoPalExplorer] 准备查询 Type=2 盲踩坐标失败，rc={Rc}", rc);
+                    }
+                    else
+                    {
+                        try
+                        {
+                            while ((rc = raw.sqlite3_step(stmt)) == raw.SQLITE_ROW)
+                            {
+                                var x = (float)raw.sqlite3_column_double(stmt, 0);
+                                var y = (float)raw.sqlite3_column_double(stmt, 1);
+                                var z = (float)raw.sqlite3_column_double(stmt, 2);
+                                blindLocations.Add(new Vector3(x, y, z));
+                            }
+
+                            if (rc != raw.SQLITE_DONE && config.devMode)
+                            {
+                                log.Warning("[AutoPalExplorer] 读取 Type=2 盲踩坐标时返回 rc={Rc}（非 SQLITE_DONE）。", rc);
+                            }
+                        }
+                        finally
+                        {
+                            raw.sqlite3_finalize(stmt);
+                        }
+                    }
+                }
+
+                // -------- 第二条查询：所有点 -> allBlindLocations --------
+                {
+                    var sql = $"SELECT X, Y, Z FROM Locations WHERE TerritoryType = {territory}";
+                    sqlite3_stmt stmt;
+                    rc = raw.sqlite3_prepare_v2(db, sql, out stmt);
+                    if (rc != raw.SQLITE_OK)
+                    {
+                        if (config.devMode)
+                            log.Warning("[AutoPalExplorer] 准备查询全部盲踩坐标失败，rc={Rc}", rc);
+                    }
+                    else
+                    {
+                        try
+                        {
+                            while ((rc = raw.sqlite3_step(stmt)) == raw.SQLITE_ROW)
+                            {
+                                var x = (float)raw.sqlite3_column_double(stmt, 0);
+                                var y = (float)raw.sqlite3_column_double(stmt, 1);
+                                var z = (float)raw.sqlite3_column_double(stmt, 2);
+                                allBlindLocations.Add(new Vector3(x, y, z));
+                            }
+
+                            if (rc != raw.SQLITE_DONE && config.devMode)
+                            {
+                                log.Warning("[AutoPalExplorer] 读取全部盲踩坐标时返回 rc={Rc}（非 SQLITE_DONE）。", rc);
+                            }
+                        }
+                        finally
+                        {
+                            raw.sqlite3_finalize(stmt);
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                // ✅ 只在这里关一次
+                raw.sqlite3_close(db);
+            }
+
+            if (config.devMode)
+            {
+                log.Information(
+                    "[AutoPalExplorer] 盲踩：加载完成，Territory={Territory}, Type=2 点位={CountType2}, 全部点位={CountAll}",
+                    territory, blindLocations.Count, allBlindLocations.Count);
+            }
+        }
+        catch (Exception ex)
+        {
+            log.Warning($"[AutoPalExplorer] 加载 PalacePal 盲踩坐标失败：{ex}");
+        }
+    }
+
+    private Vector3? GetNextBlindLocation(Vector3 from, float maxDistance)
+    {
+        Vector3? best = null;
+        var maxDistSq = maxDistance * maxDistance;
+        var bestDistSq = maxDistSq;
+        var locationList = config.BlindChestsWithTrap ? allBlindLocations : blindLocations;
+
+        // log.Warning($"[AutoPalExplorer] location数量：{locationList.Count.ToString()}");
+        foreach (var p in locationList)
+        {
+            if (IsBlindLocationIgnored(p))
+                continue;
+
+            var dx = p.X - from.X;
+            var dz = p.Z - from.Z;
+            var distSq = dx * dx + dz * dz;
+
+            if (distSq > maxDistSq)
+                continue;
+
+            if (distSq < bestDistSq)
+            {
+                bestDistSq = distSq;
+                best = p;
+            }
+        }
+
+        return best;
+    }
+
+    private long PackBlindKey(Vector3 p)
+    {
+        // 把坐标粗略量化一下，避免浮点误差导致同一点重复
+        var x = (int)MathF.Round(p.X * 10); // 0.1 精度
+        var z = (int)MathF.Round(p.Z * 10);
+        return ((long)x << 32) | (uint)z;
+    }
+
+    private bool IsBlindLocationIgnored(Vector3 p)
+        => ignoredBlindLocations.Contains(PackBlindKey(p));
+
+    private void IgnoreBlindLocation(Vector3 p)
+    {
+        ignoredBlindLocations.Add(PackBlindKey(p));
+
+        if (config.devMode)
+            log.Information("[AutoPalExplorer] 盲踩：忽略点位 ({X:0.00}, {Y:0.00}, {Z:0.00})。",
+                p.X, p.Y, p.Z);
+    }
+
+    /// <summary>
+    /// 盲踩埋藏宝藏逻辑：
+    /// - pomanderManager.HasBuriedBuff 为 false 时生效；
+    /// - 从 PalacePal 数据库中取出当前 Territory 的 Type=2 坐标；
+    /// - 选最近一个没被忽略的点，引导玩家走过去；
+    /// - 到点后停 5 秒，然后标记该点为忽略；
+    /// - 如果前往途中 4 秒几乎没移动，则判定“卡住”，也忽略该点。
+    /// 返回 true 表示本帧由盲踩逻辑接管。
+    /// </summary>
+    private bool TryHandleBlindBuriedSearch(Vector3 playerPos)
+    {
+        // 没配置 DB 就不跑
+        if (string.IsNullOrEmpty(config.PalacePalDbPath))
+            return false;
+
+        // 如果途中已经拿到埋藏宝藏 Buff 或已经开过本层埋藏宝藏，停止盲踩
+        if (pomanderManager.HasBuriedBuff || hasOpenBurinedChest)
+            return false;
+
+        EnsureBlindLocationsLoaded();
+
+        if (blindLocations.Count == 0 && !config.BlindChestsWithTrap)
+            return false;
+
+        if (allBlindLocations.Count == 0 && config.BlindChestsWithTrap)
+            return false; 
+
+        // 如果当前没有目标，挑一个最近的
+        if (currentBlindTarget is null)
+        {
+            var next = GetNextBlindLocation(playerPos, config.BlindMaxDistance);
+            if (next is null)
+            {
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] 盲踩：没有更多可踩的 Type=2 坐标。");
+                return false;
+            }
+
+            currentBlindTarget = next.Value;
+            blindArrivedAt = DateTime.MinValue;
+            blindLastProgressPos = playerPos;
+            blindLastProgressCheckAt = DateTime.UtcNow;
+
+            if (config.devMode)
+            {
+                var t = currentBlindTarget.Value;
+                log.Information("[AutoPalExplorer] 盲踩：选择新目标 ({X:0.00}, {Y:0.00}, {Z:0.00})。",
+                    t.X, t.Y, t.Z);
+            }
+        }
+
+        var target = currentBlindTarget.Value;
+        var dx = target.X - playerPos.X;
+        var dz = target.Z - playerPos.Z;
+        var distSq = dx * dx + dz * dz;
+
+        // 1) 已经到点：停 5 秒，然后忽略这个点
+        if (distSq <= BlindArriveRadius * BlindArriveRadius)
+        {
+            if (blindArrivedAt == DateTime.MinValue)
+            {
+                blindArrivedAt = DateTime.UtcNow;
+                navigator.Stop();
+
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] 盲踩：已到盲踩目标点，开始原地等待 {Seconds}s。", BlindWaitDuration.TotalSeconds);
+            }
+            else
+            {
+                var elapsed = DateTime.UtcNow - blindArrivedAt;
+                if (elapsed >= BlindWaitDuration)
+                {
+                    // 停满 5 秒：通知控制器忽略当前位置（这个点）
+                    IgnoreBlindLocation(target);
+                    currentBlindTarget = null;
+                    blindArrivedAt = DateTime.MinValue;
+
+                    if (config.devMode)
+                        log.Information("[AutoPalExplorer] 盲踩：在目标点停留 {Elapsed:0.0}s，标记为已踩过并忽略。", elapsed.TotalSeconds);
+                }
+            }
+
+            // 不管有没有刚好等完，本帧都算盲踩接管
+            return true;
+        }
+
+        // 2) 还在路上：导航 & 卡住检测
+        if (!navigator.IsBusy || IsDifferentTarget(navigator.CurrentTarget, target, 0.5f))
+        {
+            navigator.Stop();
+            navigator.TryMoveTo(target);
+
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] 盲踩：导航前往目标点。");
+        }
+        else
+        {
+            // 每 BlindStuckTimeout 秒检查一次有没有明显前进
+            var now = DateTime.UtcNow;
+            if ((now - blindLastProgressCheckAt) >= BlindStuckTimeout)
+            {
+                var mdx = playerPos.X - blindLastProgressPos.X;
+                var mdz = playerPos.Z - blindLastProgressPos.Z;
+                var moveSq = mdx * mdx + mdz * mdz;
+
+                if (moveSq < BlindStuckMoveThreshold * BlindStuckMoveThreshold)
+                {
+                    // 判定为卡住：通知控制器忽略当前位置（这个目标点），不再来了
+                    if (config.devMode)
+                        log.Information("[AutoPalExplorer] 盲踩：前往目标途中疑似卡住，忽略该盲踩点位。");
+
+                    IgnoreBlindLocation(target);
+                    currentBlindTarget = null;
+                    blindArrivedAt = DateTime.MinValue;
+                    navigator.Stop();
+                }
+                else
+                {
+                    blindLastProgressPos = playerPos;
+                }
+
+                blindLastProgressCheckAt = now;
+            }
+        }
+
+        return true;
+    }
 }

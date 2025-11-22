@@ -13,7 +13,7 @@ public sealed class Navigator
     private float lastDistSq;
     private int stagnantTicks;
 
-    private const float ArriveThresholdSq = 0.7f * 0.7f;
+    private const float ArriveThresholdSq = 0.5f * 0.5f;
     private const float MinProgressSq = 0.01f;      // 认为“有在动”的最小距离变化
     private const int MaxStagnantTicks = 120;       // 卡这么多帧就放弃当前目标
 

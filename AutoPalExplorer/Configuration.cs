@@ -24,6 +24,8 @@ namespace AutoPalExplorer
         public bool OpenBronzeChests { get; set; } = true;
         public bool OpenSilverChests { get; set; } = true;
         public bool OpenGoldChests { get; set; } = false; // 默认金关掉
+        public bool BlindChests { get; set; } = false;
+        public bool BlindChestsWithTrap { get; set; } = false;
 
         // 开发者模式
         public bool devMode { get; set; } = false;
@@ -56,6 +58,13 @@ namespace AutoPalExplorer
 
         // 魔陶器使用间隔
         public int PomanderIntervalSeconds { get; set; } = 5000;
+
+        // 数据库路径
+        public string PalacePalDbPath { get; set; } = "palace-pal.data.sqlite3";
+
+        // 盲踩目标最大允许距离
+
+        public float BlindMaxDistance { get; set; } = 25f;
 
         [System.NonSerialized]
         private IDalamudPluginInterface? pluginInterface;

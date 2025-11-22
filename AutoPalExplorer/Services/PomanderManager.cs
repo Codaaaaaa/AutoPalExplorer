@@ -57,11 +57,11 @@ public sealed class PomanderManager
         pomanders.Add(new PomanderEntry("魔陶器：运气上升",    "Fortune",    3));
         pomanders.Add(new PomanderEntry("魔陶器：形态变化",    "Witching",    3));
         pomanders.Add(new PomanderEntry("魔陶器：魔法效果解除", "Serenity",    3));
-        pomanders.Add(new PomanderEntry("魔陶器：净化护符",    "PurificationPomander", 3));
         pomanders.Add(new PomanderEntry("魔陶器：加速",        "HastePomander", 3));
-        pomanders.Add(new PomanderEntry("魔陶器：朝圣的指引",   "DevotionPomander",    3));
-        pomanders.Add(new PomanderEntry("魔陶器：重生", "Raising", 3));
+        pomanders.Add(new PomanderEntry("魔陶器：净化护符",    "PurificationPomander", 3));
         pomanders.Add(new PomanderEntry("魔陶器：感知宝藏", "Intuition", 1));
+        pomanders.Add(new PomanderEntry("魔陶器：重生", "Raising", 3));
+        pomanders.Add(new PomanderEntry("魔陶器：朝圣的指引",   "DevotionPomander",    3));
     }
     
     public void Reset()

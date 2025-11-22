@@ -12,6 +12,7 @@ using System.Collections.Generic;
 using Dalamud.Interface;
 using Dalamud.Bindings.ImGui;
 using FFXIVClientStructs.FFXIV.Component.GUI;
+
 using AutoPalExplorer.Services;
 using AutoPalExplorer.Debug;
 using AutoPalExplorer.Helpers;
@@ -108,6 +109,8 @@ public sealed class Plugin : IDalamudPlugin
         // 可选：默认开启
         if (config.EnabledByDefault)
             controller.Start();
+        
+        // Log.Info($"DB full path: {Path.Combine(Plugin.PluginInterface.AssemblyLocation.DirectoryName!, "palace-pal.data.sqlite3")}");
 
         if (config.devMode)
             Log.Information("[AutoPalExplorer] Loaded.");
@@ -244,7 +247,7 @@ public sealed class Plugin : IDalamudPlugin
             controller.NotifyBossFloor();
         }
 
-        if (text.Contains("成功发送了参加申请"))
+        if (text.Contains("发送了参加申请"))
         {
             controller.NotifyChallengeRequestSent();
         }
@@ -255,6 +258,8 @@ public sealed class Plugin : IDalamudPlugin
         uiSniffer?.Dispose();
         Framework.Update -= OnFrameworkUpdate;
         CommandManager.RemoveHandler(Command);
+        CommandManager.RemoveHandler("/uiwatch");
+        
         ChatGui.ChatMessage -= OnChatMessage;
         pomanderManager.Reset();
 

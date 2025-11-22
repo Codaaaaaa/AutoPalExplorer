@@ -36,6 +36,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.4" />
+    <PackageReference Include="SQLitePCLRaw.core" Version="2.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- 确保插件 json 跟着 DLL 一起到输出目录 -->
     <None Update="AutoPalExplorer.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

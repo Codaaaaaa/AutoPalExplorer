@@ -36,8 +36,8 @@ public sealed class AutoPalController
     private bool hasOpenBurinedChest = false;
     private DateTime lastChestInteractAt = DateTime.MinValue;
     // 记录传送装置 / 再生祭坛坐标 & 激活状态
-    private Vector3? savedExitPos;
-    private Vector3? savedRegenerationPos;
+    public Vector3? savedExitPos;
+    public Vector3? savedRegenerationPos;
     private bool exitActivatedByChat;
     private bool regenerationActivated;
     private float ExitStopRadius => MathF.Max(0.1f, config.ExitStopRadius);
@@ -54,7 +54,7 @@ public sealed class AutoPalController
     private int ChestInteractIntervalMs => Math.Max(50, config.ChestInteractIntervalMs);
     private bool nextLevelBool = false;
     private bool hasOpenedNextPilgrimWindow = false;
-    private readonly HashSet<ulong> ignoredChestIds = new(); // 需要跳过的宝箱
+    public readonly HashSet<ulong> ignoredChestIds = new(); // 需要跳过的宝箱
     private ulong lastChestInteractObjectId = 0;             // 最近一次尝试交互的宝箱ID
 
     // 跟车模式
@@ -296,6 +296,7 @@ public sealed class AutoPalController
             lastChestInteractObjectId = 0;
             ResetBlindWalkState();
             ResetStaticObjectsState();
+
             // 跟车
             wasInCombatOnBossFloor = false;
 
@@ -644,6 +645,9 @@ public sealed class AutoPalController
 
         if (ObjectIds.IsGoldChest(baseId))
             return config.OpenGoldChests;
+        
+        if (ObjectIds.IsBuriedChest(baseId))
+            return true;
 
         return false;
     }
@@ -1660,8 +1664,8 @@ public sealed class AutoPalController
 
         foreach (var obj in objectTable)
         {
-            // 只看事件物件（箱子）
-            if (obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventObj)
+            // 只看事件物件（宝藏和EventObj）
+            if (obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventObj && obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Treasure)
                 continue;
 
             // 根据配置决定开不打开这种箱子
@@ -1674,7 +1678,7 @@ public sealed class AutoPalController
 
             // ✅ 情况一：在开箱半径内，但已经不可交互
             // 说明 99% 是刚开完的箱子（或者被队友开完），直接加入 ignore，避免一直把它当目标。
-            if (!obj.IsTargetable && distSq <= ChestDoneRadius * ChestDoneRadius)
+            if (!obj.IsTargetable && distSq <= ChestDoneRadius * ChestDoneRadius && !ObjectIds.IsBuriedChest(obj.BaseId))
             {
                 if (ignoredChestIds.Add(obj.GameObjectId) && config.devMode)
                 {

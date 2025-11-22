@@ -242,7 +242,7 @@ public sealed class Plugin : IDalamudPlugin
         }
 
 
-        if (text.Contains("成功进行了传送！", StringComparison.OrdinalIgnoreCase))
+        if (Regex.IsMatch(text, @"第(100|[1-9]?[0-9])朝圣路"))
         {
             if (config.devMode)
                 Log.Information("下一层");

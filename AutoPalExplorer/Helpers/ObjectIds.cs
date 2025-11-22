@@ -94,7 +94,10 @@ namespace AutoPalExplorer.Helpers
         public static bool IsGoldChest(uint baseId)
             => GoldChestIds.Contains(baseId);
 
+        public static bool IsBuriedChest(uint baseId)
+            => BuriedChestIds.Contains(baseId);
+
         public static bool IsAnyChest(uint baseId)
-            => IsBronzeChest(baseId) || IsSilverChest(baseId) || IsGoldChest(baseId);
+            => IsBronzeChest(baseId) || IsSilverChest(baseId) || IsGoldChest(baseId)|| IsBuriedChest(baseId);
     }
 }

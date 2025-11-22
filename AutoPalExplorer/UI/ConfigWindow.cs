@@ -300,6 +300,55 @@ namespace AutoPalExplorer
                 ImGui.TextUnformatted(controller.blindLocations.Count.ToString());
                 ImGui.TextUnformatted("所有数量");
                 ImGui.TextUnformatted(controller.allBlindLocations.Count.ToString());
+
+                // === ignoredChestIds ===
+                ImGui.TextUnformatted($"忽略的宝箱 ID 列表 ({controller.ignoredChestIds.Count}):");
+
+                if (controller.ignoredChestIds.Count == 0)
+                {
+                    ImGui.TextDisabled("(空)");
+                }
+                else
+                {
+                    // 可以加滚动区域防止太多 ID 撑满窗口
+                    if (ImGui.BeginChild("IgnoredChestList", new Vector2(0, 150), true))
+                    {
+                        int index = 1;
+                        foreach (var id in controller.ignoredChestIds)
+                        {
+                            ImGui.TextUnformatted($"{index}. {id}");
+                            index++;
+                        }
+                        ImGui.EndChild();
+                    }
+                }
+
+                ImGui.Spacing();
+                ImGui.Separator();
+
+                // === savedExitPos ===
+                var exitPos = controller.savedExitPos;
+                if (exitPos.HasValue)
+                {
+                    ImGui.TextUnformatted("传送点位置:");
+                    ImGui.TextUnformatted(FormatVector3(exitPos.Value));
+                }
+                else
+                {
+                    ImGui.TextUnformatted("传送点位置: (未记录)");
+                }
+
+                // === savedRegenerationPos ===
+                var regenPos = controller.savedRegenerationPos;
+                if (regenPos.HasValue)
+                {
+                    ImGui.TextUnformatted("再生位置:");
+                    ImGui.TextUnformatted(FormatVector3(regenPos.Value));
+                }
+                else
+                {
+                    ImGui.TextUnformatted("再生位置: (未记录)");
+                }
             }
 
             ImGui.End();
@@ -451,5 +500,9 @@ namespace AutoPalExplorer
             }
         }
 
+        private static string FormatVector3(Vector3 v)
+        {
+            return $"{v.X:F2}, {v.Y:F2}, {v.Z:F2}";
+        }
     }
 }

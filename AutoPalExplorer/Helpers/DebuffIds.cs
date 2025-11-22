@@ -19,7 +19,7 @@ namespace AutoPalExplorer.Helpers
         public const ushort SteelBuff = 1100;
         // 禁止使用道具
         public const ushort ItemDisableBuff = 1094;
-        // 形态变化
-        public const ushort changeBuff = 1113;
+        // 妖灵
+        public const ushort changeBuff = 4586;
     }
 }

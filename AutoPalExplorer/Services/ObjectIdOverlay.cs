@@ -43,7 +43,7 @@ public sealed class ObjectIdOverlay
                 continue;
 
             // 显示 BaseId，如果你想看 DataId 就写 BaseId / Id 的实际字段
-            var text = obj.BaseId.ToString() + obj.ObjectKind.ToString();
+            var text = obj.BaseId.ToString() + obj.ObjectKind.ToString() + obj.GameObjectId.ToString();
 
             // 白色文字：0xAARRGGBB，这里全白不透明
             const uint color = 0xFFFFFFFF;

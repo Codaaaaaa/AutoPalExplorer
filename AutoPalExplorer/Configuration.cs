@@ -46,6 +46,9 @@ namespace AutoPalExplorer
 
         // 找怪范围
         public float EnemySearchRadius { get; set; } = 500.0f;
+        
+        // 使用魔陶器
+        public bool UsingPomander { get; set; } = true;
 
         // 避雷圈半径
         public float TrapAvoidRadius { get; set; } = 1.5f;

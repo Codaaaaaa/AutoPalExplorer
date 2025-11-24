@@ -133,6 +133,7 @@ public sealed class AutoPalController
         exitDetector.Reset();
         navigator.Stop();
         EnsureBmraiOff();
+        EnsureRotationOff();
         isBossFloor = false;
         isBossFloorQueueing = false;
         ignoredChestIds.Clear();
@@ -164,6 +165,7 @@ public sealed class AutoPalController
         IsRunning = false;
         navigator.Stop();
         EnsureBmraiOff();
+        EnsureRotationOff();
         ignoredChestIds.Clear();
         lastChestInteractObjectId = 0;
         isBossFloor = false;
@@ -292,6 +294,7 @@ public sealed class AutoPalController
             // isBossFloor = false;
             hasOpenBurinedChest = false;
             EnsureBmraiOff();
+            EnsureRotationOff();
             ignoredChestIds.Clear();
             lastChestInteractObjectId = 0;
             ResetBlindWalkState();
@@ -308,7 +311,7 @@ public sealed class AutoPalController
         if (!IsFollowMode)
         {
             // 跟车模式不使用魔陶器
-            if (!isBossFloor && !isBossFloorQueueing)
+            if (!isBossFloor && !isBossFloorQueueing && config.UsingPomander)
                 pomanderManager.UsingPomander();
         }
         
@@ -326,6 +329,7 @@ public sealed class AutoPalController
                 // 刚刚从 Boss 战中脱战：关闭 BMRAI/Rotation
                 wasInCombatOnBossFloor = false;
                 EnsureBmraiOff();
+                EnsureRotationOff();
 
                 if (config.devMode)
                     log.Information("[AutoPalExplorer] 跟车模式：Boss 战结束，已关闭 BMRAI 和 Rotation。");
@@ -783,10 +787,18 @@ public sealed class AutoPalController
 
         bmraiOn = false;
         TryCommand("/bmrai off");
-        TryCommand("/rotation Off");
+        // TryCommand("/rotation Off");
 
         if (config.devMode)
             log.Information("[AutoPalExplorer] 已发送 BMRAI 关闭指令。");
+    }
+
+    private void EnsureRotationOff()
+    {
+        TryCommand("/rotation Off");
+
+        if (config.devMode)
+            log.Information("[AutoPalExplorer] 已发送 Rotation 关闭指令。");
     }
 
     public void TryCommand(string command)
@@ -852,6 +864,7 @@ public sealed class AutoPalController
             var dist = MathF.Sqrt(distSq);
 
             EnsureBmraiOff();
+            EnsureRotationOff();
 
             if (config.devMode)
                 log.Information("[AutoPalExplorer] [Boss层] 找到出口(2005809)，距离={Dist:0.00}。", dist);

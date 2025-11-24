@@ -66,6 +66,7 @@ namespace AutoPalExplorer.Helpers
         public static readonly HashSet<uint> BuriedChestIds = new()
         {
             2007542u,
+            2007543u,
         };
 
         // 陷阱

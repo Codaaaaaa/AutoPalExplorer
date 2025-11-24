@@ -87,6 +87,13 @@ namespace AutoPalExplorer
                 config.Save();
             }
 
+            bool usingPomander = config.UsingPomander;
+            if (ImGui.Checkbox("使用魔陶器", ref usingPomander))
+            {
+                config.UsingPomander = usingPomander;
+                config.Save();
+            }
+
             ImGui.Separator();
             ImGui.TextUnformatted("战斗设置:");
 

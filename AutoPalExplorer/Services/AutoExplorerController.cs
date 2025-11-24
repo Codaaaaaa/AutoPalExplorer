@@ -1353,6 +1353,8 @@ public sealed class AutoPalController
         }
 
         var filePath = Path.Combine(Plugin.PluginInterface.AssemblyLocation.DirectoryName!, config.PalacePalDbPath);
+        if (config.devMode)
+            log.Information(filePath.ToString());
         if (!Path.IsPathRooted(config.PalacePalDbPath) && !File.Exists(filePath))
         {
             // 如果你允许直接填绝对路径，也可以再试一次绝对路径

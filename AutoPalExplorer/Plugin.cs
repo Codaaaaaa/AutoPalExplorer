@@ -197,10 +197,10 @@ public sealed class Plugin : IDalamudPlugin
         pomanderManager.CalculateOnChat(text);
         pomanderManager.UsingOnChat(text);
 
-        if (text.Contains("无法获得更多的魔陶器", StringComparison.Ordinal))
+        if (text.Contains("无法获得更多的魔陶器", StringComparison.Ordinal) || text.Contains("无法获得更多的杜松香", StringComparison.Ordinal))
         {
             if (config.devMode)
-                Log.Information("[AutoPalExplorer] 检测到“无法获得更多的魔陶器”提示，通知控制器忽略当前宝箱。");
+                Log.Information("[AutoPalExplorer] 检测到“无法获得更多的魔陶器/杜松香”提示，通知控制器忽略当前宝箱。");
             controller.NotifyChestPomanderOverflow();
         }
 

@@ -2,10 +2,12 @@ using System;
 using System.Numerics;
 using Dalamud.Interface;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using System.Net.Http;
 using System.Threading.Tasks;
 using Dalamud.Interface.Textures.TextureWraps;
+using Dalamud.Game.ClientState.Party;
 using AutoPalExplorer.Services;
 using AutoPalExplorer.Helpers;
 
@@ -19,16 +21,18 @@ namespace AutoPalExplorer
         private readonly Configuration config;
         private readonly AutoPalController controller;
         private readonly PomanderManager pomanderManager;
+        private readonly IPartyList partyList;
         private bool isVisible = false;
         private IDalamudTextureWrap? logoTexture;
         private bool logoLoadStarted = false;   
         private string? logoError;
 
-        public ConfigWindow(Configuration config, AutoPalController controller, PomanderManager pomanderManager)
+        public ConfigWindow(Configuration config, AutoPalController controller, PomanderManager pomanderManager, IPartyList partyList)
         {
             this.config = config;
             this.controller = controller;
             this.pomanderManager = pomanderManager;
+            this.partyList = partyList;
         }
 
         public void Toggle()
@@ -87,12 +91,15 @@ namespace AutoPalExplorer
                 config.Save();
             }
 
+
             bool usingPomander = config.UsingPomander;
             if (ImGui.Checkbox("使用魔陶器", ref usingPomander))
             {
                 config.UsingPomander = usingPomander;
                 config.Save();
             }
+
+            DrawFollowConfig();
 
             ImGui.Separator();
             ImGui.TextUnformatted("战斗设置:");
@@ -510,6 +517,38 @@ namespace AutoPalExplorer
         private static string FormatVector3(Vector3 v)
         {
             return $"{v.X:F2}, {v.Y:F2}, {v.Z:F2}";
+        }
+        
+        private void DrawFollowConfig()
+        {
+            ImGui.Separator();
+            ImGui.TextUnformatted("跟车模式设置");
+
+            if (partyList.Length == 0)
+            {
+                ImGui.TextDisabled("当前没有队友（不在队伍中）。");
+                return;
+            }
+
+            var names = new List<string>();
+            for (var i = 0; i < partyList.Length; i++)
+            {
+                var m = partyList[i];
+                var name = m.Name.TextValue;
+                names.Add($"{i + 1}. {name}");
+            }
+
+            var currentIndex = config.FollowPartyIndex;
+            if (currentIndex < 0 || currentIndex >= names.Count)
+                currentIndex = 0;
+
+            if (ImGui.Combo("跟随队友", ref currentIndex, names.ToArray(), names.Count))
+            {
+                config.FollowPartyIndex = currentIndex;
+                config.Save();
+            }
+
+            ImGui.TextDisabled("Start 时会尝试选中该队友，若选中失败则自动 Stop。");
         }
     }
 }

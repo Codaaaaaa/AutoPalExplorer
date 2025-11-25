@@ -5,6 +5,7 @@ using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.ClientState.Objects;
 using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Game.ClientState.Objects.Types;
+using Dalamud.Game.ClientState.Keys;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.Game.Object;
@@ -77,6 +78,12 @@ public sealed class AutoPalController
     private const float BlindArriveRadius = 0.6f;          // 认为“到点”的半径
     private const float BlindStuckMoveThreshold = 0.2f;    // 判定卡住时允许的移动距离（2D）
 
+    // Key
+    private readonly IKeyState keyState;
+    private readonly IFramework framework;
+    private readonly IPartyList partyList;
+    private readonly ITargetManager targetManager;
+
     private static void EnsureSQLiteProvider()
     {
         if (sqliteProviderInitialized)
@@ -98,7 +105,11 @@ public sealed class AutoPalController
         ICondition condition,
         IPluginLog log,
         Configuration config,
-        PomanderManager pomanderManager)
+        PomanderManager pomanderManager,
+        IKeyState keyState,
+        IFramework framework,
+        IPartyList partyList,
+        ITargetManager targetManager)
     {
         this.clientState = clientState;
         this.navigator = navigator;
@@ -110,6 +121,10 @@ public sealed class AutoPalController
         this.log = log;
         this.config = config;
         this.pomanderManager = pomanderManager;
+        this.keyState = keyState;
+        this.framework = framework;
+        this.partyList = partyList;
+        this.targetManager = targetManager;
     }
 
     public void Start()
@@ -175,7 +190,7 @@ public sealed class AutoPalController
         ResetStaticObjectsState();
         // 跟车
         wasInCombatOnBossFloor = false;
-        TryChatCommand("123456789987654321");
+        BreakActWithShift();
 
         if (config.devMode)
             log.Information("[AutoPalExplorer] 已停止。");
@@ -224,7 +239,7 @@ public sealed class AutoPalController
         wasInCombatOnBossFloor = false;
         if (IsFollowMode)
         {
-            TryChatCommand("123456789987654321");
+            BreakActWithShift();
         }
 
         if (config.devMode)
@@ -1252,8 +1267,56 @@ public sealed class AutoPalController
 
     private void StartFollowLoop()
     {
-        // TryCommand("/follow <2>");
-        TryChatCommand("ygf2start");
+        // 1. 先从配置里拿到要跟随的槽位
+        var index = config.FollowPartyIndex;
+
+        if (partyList.Length == 0)
+        {
+            log.Warning("[AutoPalExplorer] 跟车模式：当前不在队伍中，无法跟随。");
+            Stop();
+            return;
+        }
+
+        if (index < 0 || index >= partyList.Length)
+        {
+            log.Warning("[AutoPalExplorer] 跟车模式：FollowPartyIndex={Index} 无效（队伍人数={Count}），停止。", index, partyList.Length);
+            Stop();
+            return;
+        }
+
+        var member = partyList[index];
+        var actor = member.GameObject;
+
+        if (actor is null)
+        {
+            log.Warning("[AutoPalExplorer] 跟车模式：选中目标队友 GameObject 为空（可能还没加载），停止。");
+            Stop();
+            return;
+        }
+
+        // 2. 尝试把他设为当前目标（等价于你手动点人）
+        try
+        {
+            targetManager.Target = actor;
+        }
+        catch (Exception ex)
+        {
+            log.Warning($"[AutoPalExplorer] 跟车模式：设置 Target 失败：{ex}");
+            Stop();
+            return;
+        }
+
+        // 3. 再读一遍当前 Target，确认确实选中了这个人
+        if (targetManager.Target is not IGameObject currentTarget ||
+            currentTarget.GameObjectId != actor.GameObjectId)
+        {
+            log.Warning("[AutoPalExplorer] 跟车模式：尝试选中队友失败（Target 不一致），停止。");
+            Stop();
+            return;
+        }
+
+        // 4. 选中成功，发送 /pdr follow
+        TryCommand("/pdrfollow");
 
         if (config.UseBmrai)
         {
@@ -1261,8 +1324,14 @@ public sealed class AutoPalController
         }
 
         if (config.devMode)
-            log.Information("[AutoPalExplorer] 跟车模式：已发送 /follow <2> + /bmrai on + /rotation Auto");
+        {
+            log.Information(
+                "[AutoPalExplorer] 跟车模式：已选中队友 {Name} 并发送 /pdr follow。",
+                member.Name.TextValue
+            );
+        }
     }
+
 
     private void TryChatCommand(string text)
     {
@@ -1722,4 +1791,32 @@ public sealed class AutoPalController
 
         return best;
     }
+
+    private void BreakActWithShift()
+    {
+        try
+        {
+            // 按下 Shift
+            keyState[VirtualKey.SHIFT] = true;
+
+            // 1 帧后抬起（可以根据需要改成 delayTicks: 2 或 TimeSpan）
+            _ = framework.RunOnTick(
+                () =>
+                {
+                    keyState[VirtualKey.SHIFT] = false;
+                    if (config.devMode)
+                        log.Information("[AutoPalExplorer] 已抬起 Shift，用于打断 ACT/E。");
+                },
+                delayTicks: 1
+            );
+
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] 按下 Shift 用于打断 ACT/E。");
+        }
+        catch (Exception ex)
+        {
+            log.Warning($"[AutoPalExplorer] BreakActWithShift 异常：{ex}");
+        }
+    }
+
 }

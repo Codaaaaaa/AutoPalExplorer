@@ -2,6 +2,7 @@
 using System.Text.RegularExpressions;
 using Dalamud.Game.Command;
 using Dalamud.Game.Text;
+using Dalamud.Game.ClientState.Objects;
 using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.IoC;
 using Dalamud.Plugin;
@@ -37,6 +38,9 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
     [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
     [PluginService] internal static ITextureProvider TextureProvider { get; private set; } = null!;
+    [PluginService] internal static IPartyList PartyList { get; private set; } = null!;
+    [PluginService] internal static ITargetManager TargetManager { get; private set; } = null!;
+    [PluginService] internal static IKeyState KeyState { get; private set; } = null!;
 
     private readonly Configuration config;
     private readonly AutoPalController controller;
@@ -75,12 +79,16 @@ public sealed class Plugin : IDalamudPlugin
             Condition,
             Log,
             config,
-            pomanderManager
+            pomanderManager,
+            KeyState,
+            Framework,
+            PartyList,
+            TargetManager
         );
         objectIdOverlay = new ObjectIdOverlay(ObjectTable, GameGui, config);
         uiSniffer = new UiSniffer(AddonLifecycle, Log);
         // ⭐ 实例化配置窗口
-        configWindow = new ConfigWindow(config, controller, pomanderManager);
+        configWindow = new ConfigWindow(config, controller, pomanderManager, PartyList);
         
         CommandManager.AddHandler("/uiwatch", new CommandInfo(OnUiWatch)
         {

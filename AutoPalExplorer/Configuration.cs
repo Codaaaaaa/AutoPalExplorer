@@ -66,8 +66,10 @@ namespace AutoPalExplorer
         public string PalacePalDbPath { get; set; } = "palace-pal.data.sqlite3";
 
         // 盲踩目标最大允许距离
-
         public float BlindMaxDistance { get; set; } = 25f;
+
+        // 跟随队伍成员
+        public int FollowPartyIndex { get; set; } = 1;
 
         [System.NonSerialized]
         private IDalamudPluginInterface? pluginInterface;

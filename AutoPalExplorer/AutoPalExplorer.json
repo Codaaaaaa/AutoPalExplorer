@@ -5,7 +5,7 @@
   "Punchline": "测试",
   "Description": "测试",
   "ApplicableVersion": "any",
-  "IconUrl": "logo.png",
+  "IconUrl": "https://raw.githubusercontent.com/Codaaaaaa/Pal/main/AutoPalaceExplorer/logo.png",
   "Tags": [
     "utility",
     "deepdungeon",

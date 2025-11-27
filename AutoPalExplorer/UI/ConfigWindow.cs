@@ -499,7 +499,7 @@ namespace AutoPalExplorer
             {
                 using var http = new HttpClient();
                 var bytes = await http
-                    .GetByteArrayAsync("https://raw.githubusercontent.com/Codaaaaaa/Pal/main/logo.png")
+                    .GetByteArrayAsync("https://raw.githubusercontent.com/Codaaaaaa/Pal/main/AutoPalaceExplorer/logo.png")
                     .ConfigureAwait(false);
 
                 // CreateFromImageAsync 支持 png/jpg/tex 等常见格式

@@ -8,6 +8,12 @@ namespace AutoPalExplorer
         Explore = 0,
         Follow = 1
     }
+    public enum BlindSyncMode
+    {
+        Local = 0,   // 本地模式：只在本机记 ignoredBlindLocations
+        Online = 1   // 联机模式：和服务器共享 ignoredBlindLocations
+    }
+
     public class Configuration : IPluginConfiguration
     {
         public int Version { get; set; } = 1;
@@ -70,6 +76,13 @@ namespace AutoPalExplorer
 
         // 跟随队伍成员
         public int FollowPartyIndex { get; set; } = 1;
+        public BlindSyncMode BlindSyncMode { get; set; } = BlindSyncMode.Local;
+
+        // 联机服务器地址，支持自定义
+        public string OnlineServerUrl { get; set; } = "http://127.0.0.1:8080";
+
+        // 联机 API Key（需要填 123456 才会通过服务器校验）
+        public string OnlineApiKey { get; set; } = "";
 
         [System.NonSerialized]
         private IDalamudPluginInterface? pluginInterface;

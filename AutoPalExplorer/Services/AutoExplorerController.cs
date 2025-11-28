@@ -58,6 +58,12 @@ public sealed class AutoPalController
     public readonly HashSet<ulong> ignoredChestIds = new(); // 需要跳过的宝箱
     private ulong lastChestInteractObjectId = 0;             // 最近一次尝试交互的宝箱ID
 
+    // 锁定中的宝箱（防止在宝箱和门/怪之间来回切）
+    private bool hasLockedChest = false;
+    private ulong lockedChestId = 0;
+    private Vector3 lockedChestPos = Vector3.Zero;
+    private const float LockedChestGiveUpDistance = 100.0f;
+
     // 跟车模式
     private bool wasInCombatOnBossFloor = false;
     private bool IsFollowMode => config.Mode == AutoMode.Follow;
@@ -156,6 +162,7 @@ public sealed class AutoPalController
         bossExitReachedAt = DateTime.MinValue;
         ResetBlindWalkState();
         ResetStaticObjectsState();
+        ClearLockedChest();
         // 跟车
         wasInCombatOnBossFloor = false;
 
@@ -188,6 +195,7 @@ public sealed class AutoPalController
         bossExitReachedAt = DateTime.MinValue;
         ResetBlindWalkState();
         ResetStaticObjectsState();
+        ClearLockedChest();
         // 跟车
         wasInCombatOnBossFloor = false;
         BreakActWithShift();
@@ -314,6 +322,7 @@ public sealed class AutoPalController
             lastChestInteractObjectId = 0;
             ResetBlindWalkState();
             ResetStaticObjectsState();
+            ClearLockedChest();
 
             // 跟车
             wasInCombatOnBossFloor = false;
@@ -545,6 +554,10 @@ public sealed class AutoPalController
             }
         }
         
+        // ==== 3.0c 锁定的普通宝箱（防止宝箱和门/敌人之间来回切） ====
+        if (HandleLockedChest(pos, currentTarget))
+            return;
+
         // ==== 3.1 宝箱（优先度：有就去） ====
         if (FindNextChestToOpen(pos) is { } chest)
         {
@@ -773,6 +786,19 @@ public sealed class AutoPalController
         var dx = v.X - desired.X;
         var dz = v.Z - desired.Z;
         return dx * dx + dz * dz > threshold * threshold;
+    }
+
+    private void ClearLockedChest()
+    {
+        if (!hasLockedChest)
+            return;
+
+        if (config.devMode)
+            log.Information("[AutoPalExplorer] 锁定宝箱已清除：GameObjectId={Id}。", lockedChestId);
+
+        hasLockedChest = false;
+        lockedChestId = 0;
+        lockedChestPos = Vector3.Zero;
     }
 
     private void EnsureBmraiOn()
@@ -1263,6 +1289,12 @@ public sealed class AutoPalController
                 log.Information("[AutoPalExplorer] PomanderOverflow：将 GameObjectId={Id} 加入忽略宝箱列表。",
                     lastChestInteractObjectId);
         }
+
+        // ✅ 新增：如果当前锁的是这个箱子，也顺便解锁
+        if (hasLockedChest && lockedChestId == lastChestInteractObjectId)
+        {
+            ClearLockedChest();
+        }
     }
 
     private void StartFollowLoop()
@@ -1384,6 +1416,20 @@ public sealed class AutoPalController
 
         if (distSq > ChestDoneRadius * ChestDoneRadius)
         {
+            // ✅ 新增：在决定走向这个宝箱时上锁，记录 ID 和坐标
+            if (!hasLockedChest || lockedChestId != chest.GameObjectId)
+            {
+                hasLockedChest = true;
+                lockedChestId = chest.GameObjectId;
+                lockedChestPos = chest.Position;
+
+                if (config.devMode)
+                {
+                    log.Information("[AutoPalExplorer] 锁定宝箱：GameObjectId={Id}, Pos=({X:0.00}, {Y:0.00}, {Z:0.00})。",
+                        lockedChestId, lockedChestPos.X, lockedChestPos.Y, lockedChestPos.Z);
+                }
+            }
+
             if (!navigator.IsBusy || IsDifferentTarget(currentTarget, chest.Position, 1.0f))
             {
                 navigator.Stop();
@@ -1393,8 +1439,103 @@ public sealed class AutoPalController
         }
 
         // 已在开箱半径内
+        // ✅ 新增：到点后可以把锁清掉（不再需要防抖）
+        if (hasLockedChest && lockedChestId == chest.GameObjectId)
+        {
+            ClearLockedChest();
+        }
+
         TryOpenChest(chest);
         return true; // 建议这里也直接 true，后面不再处理门
+    }
+
+
+    // ✅ 新增：处理锁定中的宝箱，防止在宝箱和门/怪之间来回切
+    private bool HandleLockedChest(Vector3 playerPos, Vector3? currentTarget)
+    {
+        if (!hasLockedChest)
+            return false;
+
+        // 尝试在 objectTable 中找到这个 GameObjectId
+        IGameObject? lockedChestObj = null;
+        foreach (var obj in objectTable)
+        {
+            if (obj.GameObjectId == lockedChestId)
+            {
+                lockedChestObj = obj;
+                break;
+            }
+        }
+
+        // 1) 找到了真实对象
+        if (lockedChestObj is not null)
+        {
+            var dx = lockedChestObj.Position.X - playerPos.X;
+            var dz = lockedChestObj.Position.Z - playerPos.Z;
+            var distSq = dx * dx + dz * dz;
+
+            // 如果现在配置里已经不打算开这个箱子，或者已经被标记 ignore，直接解锁
+            if (!ShouldOpenChest(lockedChestObj.BaseId) || IsIgnoredChest(lockedChestObj))
+            {
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] 锁定宝箱已被配置忽略或在忽略列表中，解除锁定。");
+                ClearLockedChest();
+                return false;
+            }
+
+            // 如果已经不可交互且在 ChestDoneRadius 范围内，认为已经被开过，加入 ignore 并解锁
+            if (!lockedChestObj.IsTargetable && distSq <= ChestDoneRadius * ChestDoneRadius && !ObjectIds.IsBuriedChest(lockedChestObj.BaseId))
+            {
+                if (ignoredChestIds.Add(lockedChestObj.GameObjectId) && config.devMode)
+                {
+                    log.Information("[AutoPalExplorer] 锁定宝箱在 ChestDoneRadius 内且不可交互，视为已开，加入忽略列表并解锁。");
+                }
+                ClearLockedChest();
+                return false;
+            }
+
+            // 正常情况：交给现有 HandleChest 处理（移动 / 开箱），同时保持锁定
+            return HandleChest(playerPos, lockedChestObj, currentTarget);
+        }
+
+        // 2) 在 objectTable 中找不到这个箱子（被裁剪掉 / despawn）
+        var dx2 = lockedChestPos.X - playerPos.X;
+        var dz2 = lockedChestPos.Z - playerPos.Z;
+        var distSq2 = dx2 * dx2 + dz2 * dz2;
+
+        var giveUpDistSq = LockedChestGiveUpDistance * LockedChestGiveUpDistance;
+
+        if (distSq2 > giveUpDistSq)
+        {
+            // 距离原始宝箱位置 > 100：即使暂时不可见，也继续朝 lockedChestPos 走，不切换到门/怪
+            if (!navigator.IsBusy || IsDifferentTarget(currentTarget, lockedChestPos, 1.0f))
+            {
+                if (config.devMode)
+                {
+                    var dist = MathF.Sqrt(distSq2);
+                    log.Information("[AutoPalExplorer] 锁定宝箱暂时不可见，距离={Dist:0.0} > {Limit}，继续导航到记录位置。",
+                        dist, LockedChestGiveUpDistance);
+                }
+
+                TrySafeMoveTo(lockedChestPos, TrapAvoidRadiusCfg);
+            }
+
+            // 本帧由锁定宝箱逻辑接管
+            return true;
+        }
+        else
+        {
+            // 距离原始宝箱位置 <= 100 且仍然看不到这个箱子：按你说的，当作已经开过
+            if (lockedChestId != 0 && ignoredChestIds.Add(lockedChestId))
+            {
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] 锁定宝箱在100范围内仍不可见，视为已开，加入忽略列表。");
+            }
+
+            ClearLockedChest();
+            // 返回 false，让后面的门/怪逻辑可以接管
+            return false;
+        }
     }
 
     private void EnsureBlindLocationsLoaded()

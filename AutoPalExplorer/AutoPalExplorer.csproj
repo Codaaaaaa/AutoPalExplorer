@@ -17,14 +17,9 @@
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 
-  <ItemGroup>
-    <Reference Include="ECommons">
-      <HintPath>lib\ECommons.dll</HintPath>
-    </Reference>
-  </ItemGroup>
-
 
   <ItemGroup>
+    <PackageReference Include="ECommons" Version="3.2.1.15" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.4" />
     <PackageReference Include="SQLitePCLRaw.core" Version="2.1.4" />
   </ItemGroup>

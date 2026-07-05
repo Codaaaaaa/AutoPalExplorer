@@ -1,10 +1,17 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Dalamud.Game.ClientState;
 using Dalamud.Plugin.Services;
 using Dalamud.Game.ClientState.Objects.SubKinds;
 using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
+using FFXIVClientStructs.FFXIV.Component.GUI;
 using Dalamud.Game.ClientState.Conditions;
+
+using ECommons.Automation;
+using ECommons.Automation.NeoTaskManager;
+using static ECommons.GenericHelpers;
 
 using AutoPalExplorer.Helpers;
 
@@ -21,16 +28,19 @@ public sealed class PomanderManager
     private readonly Configuration config;
     public sealed class PomanderEntry
     {
-        public PomanderEntry(string keyword, string pomanderType, int threshold)
+        public PomanderEntry(string keyword, string pomanderType, int threshold, int pomanderId)
         {
             Keyword = keyword;
             PomanderType  = pomanderType;
             Threshold = threshold;
+            PomanderId = pomanderId;
         }
 
         public string Keyword { get; }
         public string PomanderType { get; }
         public int Threshold { get; }
+        // DeepDungeonItem RowId，用于 DeepDungeonStatus 回调（callback 11）
+        public int PomanderId { get; }
         public int Count { get; set; }
     }
 
@@ -38,6 +48,14 @@ public sealed class PomanderManager
     private long lastCheckTick = 0;
     private bool hasBuriedBuff = false;
     public bool HasBuriedBuff => hasBuriedBuff;
+
+    // 杜松香计数：满 3 个用一次（callback 12, 0），用后 -1
+    private int juniperCount = 0;
+    private const int JuniperUseThreshold = 3;
+    public int JuniperCount => juniperCount;
+
+    // 通过 DeepDungeonStatus 回调使用道具时的序列化任务
+    private readonly TaskManager taskManager = new();
     public PomanderManager(IClientState clientState, IObjectTable objectTable, IPluginLog log, ICommandManager commandManager, Configuration config, IChatGui chatGui, ICondition condition)
     {
         this.clientState = clientState;
@@ -48,28 +66,30 @@ public sealed class PomanderManager
         this.chatGui = chatGui;
         this.condition = condition;
 
-        pomanders.Add(new PomanderEntry("魔陶器：咒印解除",    "Safety", 1));
-        pomanders.Add(new PomanderEntry("魔陶器：全景",        "Sight", 3));
-        pomanders.Add(new PomanderEntry("魔陶器：强化自身",    "Strength", 3));
-        pomanders.Add(new PomanderEntry("魔陶器：强化防御",    "Steel", 3));
-        pomanders.Add(new PomanderEntry("魔陶器：宝箱增加",    "Affluence",    3));
-        pomanders.Add(new PomanderEntry("魔陶器：减少敌人",    "Flight",    3));
-        pomanders.Add(new PomanderEntry("魔陶器：改变敌人",    "Alteration",    3));
-        pomanders.Add(new PomanderEntry("魔陶器：解咒",        "Purity",    3));
-        pomanders.Add(new PomanderEntry("魔陶器：运气上升",    "Fortune",    3));
-        pomanders.Add(new PomanderEntry("魔陶器：形态变化",    "Witching",    3));
-        pomanders.Add(new PomanderEntry("魔陶器：魔法效果解除", "Serenity",    3));
-        pomanders.Add(new PomanderEntry("魔陶器：加速",        "HastePomander", 3));
-        pomanders.Add(new PomanderEntry("魔陶器：净化护符",    "PurificationPomander", 3));
-        pomanders.Add(new PomanderEntry("魔陶器：感知宝藏", "Intuition", 1));
-        pomanders.Add(new PomanderEntry("魔陶器：重生", "Raising", 3));
-        pomanders.Add(new PomanderEntry("魔陶器：朝圣的指引",   "DevotionPomander",    3));
+        // 第四个参数 PomanderId = DeepDungeonItem RowId（对应 DeepDungeonStatus callback 11 的第二个值）
+        pomanders.Add(new PomanderEntry("魔陶器：咒印解除",    "Safety",              1, 1));
+        pomanders.Add(new PomanderEntry("魔陶器：全景",        "Sight",               3, 2));
+        pomanders.Add(new PomanderEntry("魔陶器：强化自身",    "Strength",            3, 3));
+        pomanders.Add(new PomanderEntry("魔陶器：强化防御",    "Steel",               3, 4));
+        pomanders.Add(new PomanderEntry("魔陶器：宝箱增加",    "Affluence",           3, 5));
+        pomanders.Add(new PomanderEntry("魔陶器：减少敌人",    "Flight",              3, 6));
+        pomanders.Add(new PomanderEntry("魔陶器：改变敌人",    "Alteration",          3, 7));
+        pomanders.Add(new PomanderEntry("魔陶器：解咒",        "Purity",              3, 8));
+        pomanders.Add(new PomanderEntry("魔陶器：运气上升",    "Fortune",             3, 9));
+        pomanders.Add(new PomanderEntry("魔陶器：形态变化",    "Witching",            3, 10));
+        pomanders.Add(new PomanderEntry("魔陶器：魔法效果解除", "Serenity",            3, 11));
+        pomanders.Add(new PomanderEntry("魔陶器：加速",        "HastePomander",       3, 36));
+        pomanders.Add(new PomanderEntry("魔陶器：净化护符",    "PurificationPomander", 3, 37));
+        pomanders.Add(new PomanderEntry("魔陶器：感知宝藏",    "Intuition",           1, 14));
+        pomanders.Add(new PomanderEntry("魔陶器：重生",        "Raising",             3, 15));
+        pomanders.Add(new PomanderEntry("魔陶器：朝圣的指引",   "DevotionPomander",    3, 38));
     }
     
     public void Reset()
     {
         foreach (var p in pomanders)
             p.Count = 0;
+        juniperCount = 0;
     }
     public IReadOnlyList<PomanderEntry> Pomanders => pomanders;
 
@@ -88,50 +108,23 @@ public sealed class PomanderManager
             return;
         }
 
-        // 我们只关心“获得了魔陶器：XXX！”这种提示
-        if (!text.Contains("获得了魔陶器：", StringComparison.Ordinal))
-            return;
-
-        foreach (var p in pomanders)
+        // 杜松香：获得时计数 +1，满 3 个后在 UsingPomander 里使用
+        if (text.Contains("获得了杜松香", StringComparison.Ordinal))
         {
-            if (!text.Contains(p.Keyword, StringComparison.Ordinal))
-                continue;
-
-            p.Count++;
-            log.Information($"[AutoPalExplorer][Pomander] {p.Keyword} -> {p.Count}");
-
-            // 阈值到了就用；用一次扣掉对应层数（例如 3 层消耗 3）
-            // while (p.Count >= p.Threshold)
-            // {
-            //     log.Information("用用用");
-            //     // PomanderHelper.TryUsePomander(p.PomanderType);
-            //     TryCommand("/pomander " + p.PomanderType);
-
-            //     p.Count -= p.Threshold;
-            //     log.Debug($"[AutoPalExplorer][Pomander] 使用 {p.Keyword} (ActionId={p.Id})，剩余计数 {p.Count}");
-            // }
+            juniperCount++;
+            log.Information($"[AutoPalExplorer][Juniper] 杜松香 -> {juniperCount}");
+            return;
         }
+
+        // 魔陶器数量不再依赖聊天累加，改为每次决策前直接从 DeepDungeonStatus 面板读取。
     }
 
     /// <summary>
-    /// 何时使用pomander
+    /// 保留给 Plugin 调用；魔陶器数量现在从 UI 读取，无需再根据聊天扣减。
     /// </summary>
     public void UsingOnChat(string text)
     {
-        if (string.IsNullOrEmpty(text))
-            return;
-
-        if (!text.Contains("打碎了魔陶器：", StringComparison.Ordinal))
-            return;
-        
-        foreach (var p in pomanders)
-        {
-            if (!text.Contains(p.Keyword, StringComparison.Ordinal))
-                continue;
-
-            p.Count--;
-            log.Information($"[AutoPalExplorer][Pomander] {p.Keyword} -> {p.Count}");
-        }
+        // no-op：数量以 DeepDungeonStatus 面板为准
     }
 
     /// <summary>
@@ -139,7 +132,7 @@ public sealed class PomanderManager
     /// 1. 检测 debuff 用 Purity / Serenity
     /// 2. 根据阈值自动使用其他 pomander
     /// </summary>
-    public void UsingPomander()
+    public unsafe void UsingPomander()
     {
         // 节流：每 5 秒检测一次
         var now = Environment.TickCount64;
@@ -151,8 +144,46 @@ public sealed class PomanderManager
         if (!MapIds.IsPilgrimsTraverse(clientState.TerritoryType))
             return;
 
-        if (objectTable.LocalPlayer is not IPlayerCharacter player)
+        if (objectTable.LocalPlayer is not IPlayerCharacter)
             return;
+
+        // 打开 DeepDungeonStatus 面板；就绪后从 UI 读取魔陶器数量再决策使用。
+        if (!TryGetAddonByName<AtkUnitBase>("DeepDungeonStatus", out _))
+        {
+            var agent = AgentDeepDungeonStatus.Instance();
+            if (agent != null)
+                agent->AgentInterface.Show();
+        }
+
+        taskManager.Enqueue(() =>
+            TryGetAddonByName<AtkUnitBase>("DeepDungeonStatus", out var a) && IsAddonReady(a));
+
+        taskManager.Enqueue(() =>
+        {
+            if (!TryGetAddonByName<AtkUnitBase>("DeepDungeonStatus", out var addon) || !IsAddonReady(addon))
+                return;
+            if (objectTable.LocalPlayer is not IPlayerCharacter player)
+                return;
+
+            // 先从面板读取所有魔陶器数量（覆盖旧值），再决策
+            ReadPomanderCountsFromAddon(addon);
+            RunPomanderDecisions(player);
+        });
+    }
+
+    /// <summary>
+    /// 根据当前数量 / debuff / 阈值决定使用哪些魔陶器和杜松香。
+    /// 数量已由 <see cref="ReadPomanderCountsFromAddon"/> 从 UI 读取。
+    /// </summary>
+    private void RunPomanderDecisions(IPlayerCharacter player)
+    {
+        // ---- 0. 杜松香：满 3 个用一次（DeepDungeonStatus callback 12, 0），用后 -1 ----
+        if (juniperCount >= JuniperUseThreshold)
+        {
+            chatGui.Print($"[AutoPalExplorer] 杜松香数量达到 {juniperCount}，自动使用杜松香。");
+            UseJuniper();
+            juniperCount -= 1;
+        }
 
         // ---- 1. debuff 检测 ----
 
@@ -289,20 +320,114 @@ public sealed class PomanderManager
     }
     private void TryUsePomander(PomanderEntry entry, string reason)
     {
-        var command = "/pomander " + entry.PomanderType;
-        log.Information($"[AutoPalExplorer][Pomander] {reason}，执行命令：{command}");
-        TryCommand(command);
+        log.Information($"[AutoPalExplorer][Pomander] {reason}，使用魔陶器 {entry.PomanderType} (Id={entry.PomanderId})。");
+        FireDeepDungeonStatusCallback(11, entry.PomanderId);
     }
-    private void TryCommand(string command)
+
+    /// <summary>
+    /// 使用杜松香：DeepDungeonStatus callback (12, 0)。
+    /// </summary>
+    private void UseJuniper()
     {
-        try
+        log.Information("[AutoPalExplorer][Juniper] 使用杜松香 (callback 12, 0)。");
+        FireDeepDungeonStatusCallback(12, 0);
+    }
+
+    /// <summary>
+    /// 打开（若未打开）DeepDungeonStatus 面板，等待其就绪后触发回调。
+    /// 用于使用魔陶器 (11, id) 或杜松香 (12, 0)。
+    /// </summary>
+    private unsafe void FireDeepDungeonStatusCallback(int category, int value)
+    {
+        if (!TryGetAddonByName<AtkUnitBase>("DeepDungeonStatus", out _))
         {
-            commandManager.ProcessCommand(command);
+            var agent = AgentDeepDungeonStatus.Instance();
+            if (agent != null)
+                agent->AgentInterface.Show();
         }
-        catch (Exception ex)
+
+        taskManager.Enqueue(() =>
+            TryGetAddonByName<AtkUnitBase>("DeepDungeonStatus", out var addon) && IsAddonReady(addon));
+
+        taskManager.Enqueue(() =>
         {
-            log.Warning($"[AutoPalExplorer] Failed to execute command '{command}': {ex.Message}");
+            if (TryGetAddonByName<AtkUnitBase>("DeepDungeonStatus", out var addon))
+                Callback.Fire(addon, true, category, value);
+        });
+    }
+
+    /// <summary>
+    /// 从 DeepDungeonStatus 面板读取每个魔陶器的数量并写回 Count。
+    /// 面板结构：容器节点 18 里的槽位节点 19~34（顺序与 <see cref="pomanders"/> 一致，19=咒印解除）。
+    /// 每个槽位内：Button Component Node(id 2) 不可见 => 0；
+    /// 否则读取按钮内 Text Node(id 3) 的文本：空 => 1，数字 => 该数量。
+    /// </summary>
+    private unsafe void ReadPomanderCountsFromAddon(AtkUnitBase* addon)
+    {
+        if (addon == null)
+            return;
+
+        for (var i = 0; i < pomanders.Count; i++)
+        {
+            var count = ReadOnePomanderCount(addon, (uint)(19 + i));
+            pomanders[i].Count = count;
+
+            if (config.devMode)
+                log.Information($"[AutoPalExplorer][Pomander][Read] nodeId={19 + i} {pomanders[i].Keyword} -> {count}");
         }
+    }
+
+    private unsafe int ReadOnePomanderCount(AtkUnitBase* addon, uint slotNodeId)
+    {
+        // 优先直接按 id 取；取不到再从容器节点 18 里找
+        var slotNode = addon->GetNodeById(slotNodeId);
+        if (slotNode == null)
+        {
+            var container = addon->GetNodeById(18);
+            slotNode = GetComponentChildById(container, slotNodeId);
+        }
+        if (slotNode == null)
+            return 0;
+
+        // (2) Button Component Node
+        var buttonNode = GetComponentChildById(slotNode, 2);
+        if (buttonNode == null)
+            return 0;
+
+        // 不可见 / 不可用 => 0
+        if ((buttonNode->NodeFlags & NodeFlags.Visible) == 0)
+            return 0;
+
+        // (3) 按钮里的 Text Node
+        var textResNode = GetComponentChildById(buttonNode, 3);
+        if (textResNode == null)
+            return 1; // 有可见按钮但取不到文本，保守视为 1
+
+        var textNode = (AtkTextNode*)textResNode;
+        var text = textNode->NodeText.GetText();
+        if (string.IsNullOrWhiteSpace(text))
+            return 1; // 空 => 1
+
+        var digits = new string(text.Where(char.IsDigit).ToArray());
+        if (string.IsNullOrEmpty(digits))
+            return 1;
+
+        return int.TryParse(digits, out var n) ? n : 1;
+    }
+
+    /// <summary>
+    /// 从一个组件节点的内部节点列表中按 id 取子节点。
+    /// </summary>
+    private static unsafe AtkResNode* GetComponentChildById(AtkResNode* node, uint id)
+    {
+        if (node == null)
+            return null;
+
+        var compNode = node->GetAsAtkComponentNode();
+        if (compNode == null || compNode->Component == null)
+            return null;
+
+        return compNode->Component->UldManager.SearchNodeById(id);
     }
 
     public void NotifyBuriedtBuff()

@@ -17,6 +17,11 @@ using Dalamud.Plugin.Services;
 
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.Game.Object;
+using FFXIVClientStructs.FFXIV.Component.GUI;
+
+using ECommons.Automation;
+using ECommons.Automation.NeoTaskManager;
+using static ECommons.GenericHelpers;
 
 using SQLitePCL;
 
@@ -74,6 +79,16 @@ public sealed class AutoPalController
     // 跟车模式
     private bool wasInCombatOnBossFloor = false;
     private bool IsFollowMode => config.Mode == AutoMode.Follow;
+
+    // ==== 地宫入口自动化（terr 816，只有车头模式运行）====
+    private const uint EntryTerritory = 816;
+    private const uint EntryObjectBaseId = 1054942;
+    private static readonly Vector3 EntryPoint = new(424.2f, 89.4f, -772.7f);
+    private const float EntryReachRadius = 5.0f;
+    private bool entrySubmitted = false;                       // 收到“成功发送了参加申请”后为 true
+    private DateTime nextEntryFlytoAt = DateTime.MinValue;     // flyto 节流
+    private DateTime nextEntryConfirmFireAt = DateTime.MinValue; // SelectYesno 节流
+    private readonly TaskManager entryTaskManager = new();
 
     // 盲踩
     private readonly HashSet<long> ignoredBlindLocations = new();   // 当前层不再去踩的坐标
@@ -237,6 +252,9 @@ public sealed class AutoPalController
         ClearLockedChest();
         // 跟车
         wasInCombatOnBossFloor = false;
+        // 地宫入口
+        entrySubmitted = false;
+        entryTaskManager.Abort();
 
         if (IsFollowMode)
         {
@@ -270,6 +288,8 @@ public sealed class AutoPalController
         ClearLockedChest();
         // 跟车
         wasInCombatOnBossFloor = false;
+        // 地宫入口
+        entryTaskManager.Abort();
         BreakActWithShift();
 
         if (config.devMode)
@@ -335,6 +355,9 @@ public sealed class AutoPalController
         bossExitReachedAt = DateTime.MinValue;
         nextChallengeAttemptAt = DateTime.MinValue;
         wasInCombatOnBossFloor = false;
+        // 地宫入口：申请已发出，结束入口 UI 流程
+        entrySubmitted = true;
+        entryTaskManager.Abort();
 
         if (config.devMode)
             log.Information("[AutoPalExplorer] 收到成功发送参加申请提示，结束 Boss 流程逻辑。");
@@ -357,6 +380,16 @@ public sealed class AutoPalController
                 log.Information("[AutoPalExplorer] Update：本地玩家为空，等待。");
             return;
         }
+
+        // 地宫入口地图（terr 816）：只有车头模式自动进本，不走下面的探索/停止逻辑
+        if (clientState.TerritoryType == EntryTerritory)
+        {
+            HandleDungeonEntry(player.Position);
+            return;
+        }
+
+        // 离开入口地图后重置提交状态，方便下一趟再次进本
+        entrySubmitted = false;
 
         // 如果不在目标地图则结束
         if (!MapIds.IsPilgrimsTraverse(clientState.TerritoryType))
@@ -1163,6 +1196,132 @@ public sealed class AutoPalController
                 return obj;
         }
         return null;
+    }
+
+    // ================= 地宫入口自动化（terr 816）=================
+
+    /// <summary>
+    /// 在入口地图（terr 816）自动进本：
+    /// 1. 靠近入口坐标（不足 5 格用 /vnav flyto 接近）；
+    /// 2. 交互入口物件 (BaseId=1054942)；
+    /// 3. DeepDungeonMenu -> callback(0)；
+    /// 4. DeepDungeonSaveData -> callback(0,0)；
+    /// 5. SelectString -> 选 0；
+    /// 6. 之后不断 SelectYesno 选 0，直到出现 SelectString 再选 0，进入地宫。
+    /// 只有车头模式运行；收到“成功发送了参加申请”后结束。
+    /// </summary>
+    private void HandleDungeonEntry(Vector3 pos)
+    {
+        if (IsFollowMode)
+            return; // 只有车头模式自动进本
+
+        if (entrySubmitted)
+            return; // 申请已发出
+
+        if (entryTaskManager.IsBusy)
+            return; // UI 序列进行中，等它跑完
+
+        var dist = (pos - EntryPoint).Length();
+        if (dist > EntryReachRadius)
+        {
+            var now = DateTime.UtcNow;
+            if (now >= nextEntryFlytoAt)
+            {
+                TryCommand("/vnav flyto 424.2 89.4 -772.7");
+                nextEntryFlytoAt = now.AddSeconds(2);
+
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] [入口] 距离入口 {Dist:0.0} 格，flyto 接近。", dist);
+            }
+            return;
+        }
+
+        var entryObj = FindObjectByBaseId(EntryObjectBaseId);
+        if (entryObj is null)
+        {
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] [入口] 已到入口附近，但未找到入口物件 (BaseId={BaseId})，等待。", EntryObjectBaseId);
+            return;
+        }
+
+        // 停止导航后开始 UI 交互序列
+        TryCommand("/vnav stop");
+        EnqueueEntrySequence(entryObj.GameObjectId);
+
+        if (config.devMode)
+            log.Information("[AutoPalExplorer] [入口] 已到入口附近，开始交互进本序列。");
+    }
+
+    private unsafe void EnqueueEntrySequence(ulong entryObjectId)
+    {
+        // 1. 交互入口物件
+        entryTaskManager.Enqueue(() => InteractEntryObject(entryObjectId));
+
+        // 2. DeepDungeonMenu -> callback(0)
+        entryTaskManager.Enqueue(() =>
+            TryGetAddonByName<AtkUnitBase>("DeepDungeonMenu", out var a) && IsAddonReady(a));
+        entryTaskManager.Enqueue(() =>
+        {
+            if (TryGetAddonByName<AtkUnitBase>("DeepDungeonMenu", out var a))
+                Callback.Fire(a, true, 0);
+        });
+
+        // 3. DeepDungeonSaveData -> callback(0, 0)
+        entryTaskManager.Enqueue(() =>
+            TryGetAddonByName<AtkUnitBase>("DeepDungeonSaveData", out var a) && IsAddonReady(a));
+        entryTaskManager.Enqueue(() =>
+        {
+            if (TryGetAddonByName<AtkUnitBase>("DeepDungeonSaveData", out var a))
+                Callback.Fire(a, true, 0, 0);
+        });
+
+        // 4. SelectString -> 选 0
+        entryTaskManager.Enqueue(() =>
+            TryGetAddonByName<AtkUnitBase>("SelectString", out var a) && IsAddonReady(a));
+        entryTaskManager.Enqueue(() =>
+        {
+            if (TryGetAddonByName<AtkUnitBase>("SelectString", out var a))
+                Callback.Fire(a, true, 0);
+        });
+
+        // 5. 不断 SelectYesno 选 0，直到再次出现 SelectString 选 0
+        nextEntryConfirmFireAt = DateTime.MinValue;
+        entryTaskManager.Enqueue(HandleEntryConfirmLoop);
+    }
+
+    private unsafe bool InteractEntryObject(ulong entryObjectId)
+    {
+        foreach (var obj in objectTable)
+        {
+            if (obj.GameObjectId != entryObjectId)
+                continue;
+
+            TryInteractWithObject(obj, "地宫入口");
+            return true;
+        }
+        return false; // 找不到就重试
+    }
+
+    /// <summary>
+    /// SelectYesno 全部选 0（是），直到出现 SelectString 再选 0 并结束。
+    /// </summary>
+    private unsafe bool HandleEntryConfirmLoop()
+    {
+        if (TryGetAddonByName<AtkUnitBase>("SelectString", out var ss) && IsAddonReady(ss))
+        {
+            Callback.Fire(ss, true, 0);
+            return true; // 完成
+        }
+
+        var now = DateTime.UtcNow;
+        if (now >= nextEntryConfirmFireAt &&
+            TryGetAddonByName<AtkUnitBase>("SelectYesno", out var yn) && IsAddonReady(yn))
+        {
+            Callback.Fire(yn, true, 0);
+            nextEntryConfirmFireAt = now.AddSeconds(1.0); // 节流，避免对同一弹窗连点
+        }
+
+        return false; // 继续等待/重试
     }
 
     /// <summary>

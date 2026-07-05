@@ -13,8 +13,9 @@ using Dalamud.Bindings.ImGui;
 using Dalamud.Game.Chat;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 
+using ECommons;
+
 using AutoPalExplorer.Services;
-using AutoPalExplorer.Debug;
 using AutoPalExplorer.Helpers;
 
 namespace AutoPalExplorer;
@@ -44,16 +45,16 @@ public sealed class Plugin : IDalamudPlugin
 
     private readonly Configuration config;
     private readonly AutoPalController controller;
-    private readonly ObjectIdOverlay objectIdOverlay;
     private readonly PomanderManager pomanderManager;
-    private PomanderDebuggerEx? pomanderDebuggerEx;
-    private UiSniffer? uiSniffer;
     private readonly bool isAllowed;
     // ⭐ 新增：UI 封装类
     private readonly ConfigWindow configWindow;
 
     public Plugin()
     {
+        // 初始化 ECommons（Callback / TaskManager / Addon 辅助）
+        ECommonsMain.Init(PluginInterface, this);
+
         // 白名单检查
         isAllowed = WhiteListCheck.IsPlayerAllowed(PlayerState);
 
@@ -67,7 +68,6 @@ public sealed class Plugin : IDalamudPlugin
         var exitDetector = new ExitDetector(ObjectTable, Log);
         var wallFollower = new WallFollower(ObjectTable, navigator, Log);
         pomanderManager = new PomanderManager(ClientState, ObjectTable, Log, CommandManager, config, ChatGui, Condition);
-        pomanderDebuggerEx = new PomanderDebuggerEx(Log, GameInteropProvider, ObjectTable);
 
         controller = new AutoPalController(
             ClientState,
@@ -85,15 +85,8 @@ public sealed class Plugin : IDalamudPlugin
             PartyList,
             TargetManager
         );
-        objectIdOverlay = new ObjectIdOverlay(ObjectTable, GameGui, config);
-        uiSniffer = new UiSniffer(AddonLifecycle, Log);
         // ⭐ 实例化配置窗口
         configWindow = new ConfigWindow(config, controller, pomanderManager, PartyList);
-        
-        CommandManager.AddHandler("/uiwatch", new CommandInfo(OnUiWatch)
-        {
-            HelpMessage = "Log addon names/types (usage: /uiwatch on | off)"
-        });
 
         Log.Information("[AutoPalExplorer] Plugin loaded.");
 
@@ -124,22 +117,8 @@ public sealed class Plugin : IDalamudPlugin
             Log.Information("[AutoPalExplorer] Loaded.");
     }
 
-    private void OnUiWatch(string cmd, string args)
-    {
-        if (isAllowed)
-        {
-            if (string.Equals(args, "on", StringComparison.OrdinalIgnoreCase))
-                uiSniffer?.Enable();
-            else if (string.Equals(args, "off", StringComparison.OrdinalIgnoreCase))
-                uiSniffer?.Disable();
-            else
-                Log.Information("Usage: /uiwatch on | off");
-        }
-    }
-
     private void OnFrameworkUpdate(IFramework framework)
     {
-        // pomanderDebuggerEx?.UsePomander(6268u);
         controller.Update();
     }
 
@@ -166,10 +145,6 @@ public sealed class Plugin : IDalamudPlugin
                     break;
 
                 case "toggle":
-                case "debug":
-                    PomanderDebugger.DumpPomanderSheets(DataManager, Log);
-                    break;
-
                 case "":
                     if (controller.IsRunning)
                     {
@@ -265,11 +240,9 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
-        uiSniffer?.Dispose();
         Framework.Update -= OnFrameworkUpdate;
         CommandManager.RemoveHandler(Command);
-        CommandManager.RemoveHandler("/uiwatch");
-        
+
         ChatGui.ChatMessage -= OnChatMessage;
         pomanderManager.Reset();
 
@@ -278,6 +251,7 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenMainUi -= ToggleConfigUi;
 
         controller.Stop();
+        ECommonsMain.Dispose();
         if (config.devMode)
             Log.Information("[AutoPalExplorer] Disposed.");
     }
@@ -291,7 +265,6 @@ public sealed class Plugin : IDalamudPlugin
     {
         if (isAllowed)
         {
-            objectIdOverlay.Draw();
             configWindow.Draw();
         }
         else

@@ -263,6 +263,26 @@ namespace AutoPalExplorer
                     config.Save();
                 }
 
+                // ===== 车头：队友进战支援 =====
+                bool helpParty = config.HelpPartyInCombat;
+                if (ImGui.Checkbox("队友进战时前去支援", ref helpParty))
+                {
+                    config.HelpPartyInCombat = helpParty;
+                    config.Save();
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("车头(探索)模式：检测到队友进入战斗就停止探索，跑到队友身边帮忙打怪。");
+
+                if (config.HelpPartyInCombat)
+                {
+                    float helpRadius = config.HelpPartyArriveRadius;
+                    if (ImGui.DragFloat("支援到位距离 (m)", ref helpRadius, 0.5f, 0.5f, 30.0f, "%.1f"))
+                    {
+                        config.HelpPartyArriveRadius = MathF.Max(0.5f, helpRadius);
+                        config.Save();
+                    }
+                }
+
                 // ===== 远程开怪 =====
                 // PullRange
                 float pullRange = config.PullRange;

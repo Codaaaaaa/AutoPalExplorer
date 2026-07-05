@@ -56,6 +56,13 @@ namespace AutoPalExplorer
         // 找怪范围
         public float EnemySearchRadius { get; set; } = 500.0f;
 
+        // ===== 车头模式：队友进战支援 =====
+        // 检测到队友进入战斗状态时，停止探索前去支援打怪
+        public bool HelpPartyInCombat { get; set; } = true;
+
+        // 到进战队友这个距离（米）内就算“到位”，开始就近打怪
+        public float HelpPartyArriveRadius { get; set; } = 3.0f;
+
         // ===== 远程开怪（避免脸开） =====
         // 走到怪物这个距离（米）以内就停下用远程技能开怪；填 <=0 表示沿用旧的“走到脸上”行为
         public float PullRange { get; set; } = 5.0f;

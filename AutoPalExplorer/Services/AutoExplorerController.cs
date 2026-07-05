@@ -80,10 +80,37 @@ public sealed class AutoPalController
     // Boss 流程里弹出的确认窗口（DeepDungeonMenu / SelectYesno）点击节流
     private DateTime nextBossAddonFireAt = DateTime.MinValue;
     private float EnemySearchRadius => MathF.Max(1.0f, config.EnemySearchRadius);
+    // 车头支援：到进战队友多近算“到位”
+    private float HelpPartyArriveRadius => MathF.Max(0.5f, config.HelpPartyArriveRadius);
     // 远程开怪
     private float PullRange => config.PullRange;
     private int PullActionIntervalMs => Math.Max(200, config.PullActionIntervalMs);
     private DateTime nextPullActionAt = DateTime.MinValue;
+
+    // 移动速度检测：读条技能必须站定才放，否则移动会打断读条
+    private Vector3 lastMovePos;
+    private DateTime lastMoveAt = DateTime.MinValue;
+    private float currentSpeedMps;
+    private const float MovingSpeedThreshold = 0.3f; // m/s，低于此值视为已站定
+    private bool IsPlayerMoving => currentSpeedMps > MovingSpeedThreshold;
+
+    private void UpdateMovementTracker(Vector3 pos)
+    {
+        var now = DateTime.UtcNow;
+        if (lastMoveAt != DateTime.MinValue)
+        {
+            var dt = (now - lastMoveAt).TotalSeconds;
+            if (dt > 0.0001)
+            {
+                var dx = pos.X - lastMovePos.X;
+                var dz = pos.Z - lastMovePos.Z;
+                currentSpeedMps = (float)(MathF.Sqrt(dx * dx + dz * dz) / dt);
+            }
+        }
+
+        lastMovePos = pos;
+        lastMoveAt = now;
+    }
 
     /// <summary>
     /// 解析当前应使用的开怪指令：
@@ -101,7 +128,7 @@ public sealed class AutoPalController
 
         var jobId = player.ClassJob.RowId;
         if (PullActions.ByJob.TryGetValue(jobId, out var skill) && !string.IsNullOrWhiteSpace(skill))
-            return $"/ac \"{skill}\"";
+            return $"/ac {skill} <目标>";
 
         return null;
     }
@@ -457,6 +484,7 @@ public sealed class AutoPalController
 
         var inCombat = condition[ConditionFlag.InCombat];
         var pos = player.Position;
+        UpdateMovementTracker(pos); // 每帧刷新移动速度（用于读条技能站定判断）
         if (config.devMode)
         {
             log.Information("[AutoPalExplorer] Update Tick：Territory={Territory}, 位置=({X:0.00}, {Y:0.00}, {Z:0.00})，BMRAI={Bmrai}，NavigatorBusy={Busy}",
@@ -658,6 +686,13 @@ public sealed class AutoPalController
                 return;
             }
         }
+        // ==== 2.2 车头模式：队友进战则前去支援打怪 ====
+        // 只有车头（探索）模式支援；本地玩家已进战会在上面的战斗分支直接 return，走不到这里。
+        if (!IsFollowMode && TryHelpPartyInCombat(pos, player, currentTarget))
+        {
+            return;
+        }
+
         // 3. 优先级决策
         // ==== 3.0 埋藏的宝藏（最高优先级） ====
         var buried = FindNearestBuriedChest(pos, 500f);
@@ -792,50 +827,7 @@ public sealed class AutoPalController
         var enemy = FindNearestEnemy(pos, EnemySearchRadius);
         if (enemy is not null)
         {
-            var ex = enemy.Position.X - pos.X;
-            var ez = enemy.Position.Z - pos.Z;
-            var edist = MathF.Sqrt(ex * ex + ez * ez);
-
-            // 远程开怪：走进 PullRange 内就停下、锁定目标、用当前职业的远程技能开怪，避免脸开
-            var pullCommand = ResolvePullCommand(player);
-            if (config.PullRange > 0f && pullCommand is not null && edist <= PullRange)
-            {
-                SetIntent($"发现怪物：{edist:0.0}m 内远程开怪");
-
-                if (navigator.IsBusy)
-                    navigator.Stop();
-
-                // 锁定最近的怪作为技能目标
-                if (targetManager.Target?.GameObjectId != enemy.GameObjectId)
-                    targetManager.Target = enemy;
-
-                // 节流发开怪指令，避免每帧狂点（进战后由顶部战斗分支交给 BMRAI）
-                var now = DateTime.UtcNow;
-                if (now >= nextPullActionAt)
-                {
-                    TryCommand(pullCommand);
-                    nextPullActionAt = now.AddMilliseconds(PullActionIntervalMs);
-
-                    if (config.devMode)
-                        log.Information("[AutoPalExplorer] 远程开怪：目标={Name}, 距离={Dist:0.00}, 执行指令 {Cmd}。",
-                            enemy.Name.TextValue, edist, pullCommand);
-                }
-
-                return;
-            }
-
-            SetIntent("发现怪物：前往并交给 BMRAI");
-
-            if (config.devMode)
-                log.Information("[AutoPalExplorer] 找到最近敌人 Name={Name}, 距离={Dist:0.00}，发送导航到敌人位置。",
-                    enemy.Name.TextValue, edist);
-
-            if (!navigator.IsBusy || IsDifferentTarget(currentTarget, enemy.Position, 1.0f))
-            {
-                navigator.Stop();
-                navigator.TryMoveTo(enemy.Position);
-            }
-
+            EngageEnemy(enemy, pos, player, currentTarget);
             return;
         }
 
@@ -1059,6 +1051,25 @@ public sealed class AutoPalController
         catch (Exception ex)
         {
             log.Warning($"[AutoPalExplorer] 执行指令失败 '{command}': {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 通过游戏原生聊天框发送指令。
+    /// 注意：ICommandManager.ProcessCommand 只会执行 Dalamud/插件注册的指令（/bmrai、/vnav…），
+    /// 不会执行游戏原生指令（/ac、/action、/merror 等）。开怪用的 /ac 必须走这里。
+    /// </summary>
+    private void SendGameChatCommand(string command)
+    {
+        try
+        {
+            Chat.SendMessage(command);
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] 发送游戏指令：{Cmd}", command);
+        }
+        catch (Exception ex)
+        {
+            log.Warning($"[AutoPalExplorer] 发送游戏指令失败 '{command}': {ex.Message}");
         }
     }
 
@@ -1582,6 +1593,166 @@ public sealed class AutoPalController
 
         return best;
     }
+    /// <summary>
+    /// 前往一个敌人并开怪：
+    /// - 若配置了远程开怪且已进入 PullRange：停下、锁定目标、按职业远程技能开怪；
+    /// - 否则：导航到敌人身边（进战后交给 BMRAI）。
+    /// 从“找怪”与“支援队友”两处复用。
+    /// </summary>
+    private void EngageEnemy(IBattleChara enemy, Vector3 pos, IPlayerCharacter? player, Vector3? currentTarget)
+    {
+        var ex = enemy.Position.X - pos.X;
+        var ez = enemy.Position.Z - pos.Z;
+        var edist = MathF.Sqrt(ex * ex + ez * ez);
+
+        // 远程开怪：走进 PullRange 内就停下、锁定目标、用当前职业的远程技能开怪，避免脸开
+        var pullCommand = ResolvePullCommand(player);
+        if (config.PullRange > 0f && pullCommand is not null && edist <= PullRange)
+        {
+            SetIntent($"发现怪物：{edist:0.0}m 内远程开怪");
+
+            if (navigator.IsBusy)
+                navigator.Stop();
+
+            // 锁定最近的怪作为技能目标
+            if (targetManager.Target?.GameObjectId != enemy.GameObjectId)
+                targetManager.Target = enemy;
+
+            // 读条技能必须站定才放，否则移动会打断读条：还在移动（减速中）就本帧只停不放，等站稳
+            if (IsPlayerMoving)
+            {
+                SetIntent($"发现怪物：{edist:0.0}m 内，等待站定后开怪");
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] 远程开怪：仍在移动(speed={Speed:0.00} m/s)，等待站定后再放技能。", currentSpeedMps);
+                return;
+            }
+
+            // 节流发开怪指令，避免每帧狂点（进战后由顶部战斗分支交给 BMRAI）
+            var now = DateTime.UtcNow;
+            if (now >= nextPullActionAt)
+            {
+                // /ac 是游戏原生指令，必须走聊天框而不是 ProcessCommand
+                SendGameChatCommand(pullCommand);
+                nextPullActionAt = now.AddMilliseconds(PullActionIntervalMs);
+
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] 远程开怪：目标={Name}, 距离={Dist:0.00}, 执行指令 {Cmd}。",
+                        enemy.Name.TextValue, edist, pullCommand);
+            }
+
+            return;
+        }
+
+        SetIntent("发现怪物：前往并交给 BMRAI");
+
+        if (config.devMode)
+            log.Information("[AutoPalExplorer] 找到最近敌人 Name={Name}, 距离={Dist:0.00}，发送导航到敌人位置。",
+                enemy.Name.TextValue, edist);
+
+        if (!navigator.IsBusy || IsDifferentTarget(currentTarget, enemy.Position, 1.0f))
+        {
+            navigator.Stop();
+            navigator.TryMoveTo(enemy.Position);
+        }
+    }
+
+    /// <summary>
+    /// 车头模式支援：如果有队友进入战斗状态，停止当前探索，前去支援。
+    /// - 离进战队友较远：导航到队友身边；
+    /// - 到队友身边后：找最近的怪开打（复用 EngageEnemy）；
+    /// - 队友在战斗但附近没有可打的怪：待在队友身边，不跑去开箱/贴墙。
+    /// 返回 true 表示本帧由支援逻辑接管。
+    /// </summary>
+    private bool TryHelpPartyInCombat(Vector3 pos, IPlayerCharacter? player, Vector3? currentTarget)
+    {
+        if (!config.HelpPartyInCombat)
+            return false;
+
+        var mate = FindNearestInCombatPartyMember(pos);
+        if (mate is null)
+            return false;
+
+        var dx = mate.Position.X - pos.X;
+        var dz = mate.Position.Z - pos.Z;
+        var dist = MathF.Sqrt(dx * dx + dz * dz);
+
+        // 距离较远：先跑到队友身边
+        if (dist > HelpPartyArriveRadius)
+        {
+            SetIntent($"车头：队友进战，前去支援（{dist:0.0}m）");
+
+            if (!navigator.IsBusy || IsDifferentTarget(currentTarget, mate.Position, 1.5f))
+            {
+                navigator.Stop();
+                navigator.TryMoveTo(mate.Position);
+            }
+
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] [支援] 队友 {Name} 进战，前往支援，距离={Dist:0.00}。",
+                    mate.Name.TextValue, dist);
+
+            return true;
+        }
+
+        // 已到队友身边：找最近的怪开打
+        var enemy = FindNearestEnemy(pos, EnemySearchRadius);
+        if (enemy is not null)
+        {
+            SetIntent("车头：在队友身边帮忙打怪");
+            EngageEnemy(enemy, pos, player, currentTarget);
+            return true;
+        }
+
+        // 队友在战斗但附近找不到可打的怪：待命在旁，别跑去开箱
+        SetIntent("车头：队友进战，待命在旁");
+        if (navigator.IsBusy)
+            navigator.Stop();
+
+        return true;
+    }
+
+    /// <summary>
+    /// 找最近的、处于战斗状态且未阵亡的队友（排除自己）。
+    /// </summary>
+    private IBattleChara? FindNearestInCombatPartyMember(Vector3 from)
+    {
+        var localId = objectTable.LocalPlayer?.GameObjectId ?? 0;
+
+        IBattleChara? best = null;
+        var bestDistSq = float.MaxValue;
+
+        foreach (var member in partyList)
+        {
+            var obj = member.GameObject;
+            if (obj is null)
+                continue;
+
+            if (obj.GameObjectId == localId)
+                continue;
+
+            if (obj is not IBattleChara bc)
+                continue;
+
+            if (bc.IsDead || bc.CurrentHp <= 0)
+                continue;
+
+            if (!bc.StatusFlags.HasFlag(StatusFlags.InCombat))
+                continue;
+
+            var dx = bc.Position.X - from.X;
+            var dz = bc.Position.Z - from.Z;
+            var distSq = dx * dx + dz * dz;
+
+            if (distSq < bestDistSq)
+            {
+                bestDistSq = distSq;
+                best = bc;
+            }
+        }
+
+        return best;
+    }
+
     private IBattleChara? FindNearestEnemy(Vector3 from, float maxDistance)
     {
         IBattleChara? best = null;

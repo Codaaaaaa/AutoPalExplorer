@@ -11,6 +11,7 @@ using System.Text.Json.Serialization;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.ClientState.Objects;
 using Dalamud.Game.ClientState.Objects.Enums;
+using Dalamud.Game.ClientState.Objects.SubKinds;
 using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Game.ClientState.Keys;
 using Dalamud.Plugin.Services;
@@ -76,7 +77,34 @@ public sealed class AutoPalController
     private readonly double BossExitInteractDelaySeconds = 2.0;
     private DateTime bossExitReachedAt = DateTime.MinValue;
     private DateTime nextChallengeAttemptAt = DateTime.MinValue;
+    // Boss 流程里弹出的确认窗口（DeepDungeonMenu / SelectYesno）点击节流
+    private DateTime nextBossAddonFireAt = DateTime.MinValue;
     private float EnemySearchRadius => MathF.Max(1.0f, config.EnemySearchRadius);
+    // 远程开怪
+    private float PullRange => config.PullRange;
+    private int PullActionIntervalMs => Math.Max(200, config.PullActionIntervalMs);
+    private DateTime nextPullActionAt = DateTime.MinValue;
+
+    /// <summary>
+    /// 解析当前应使用的开怪指令：
+    /// - 若手动填了 PullActionCommand，则以它为准（覆盖职业表）；
+    /// - 否则按当前职业从 PullActions 表里查技能，返回 /ac "技能名"；
+    /// - 该职业没有远程开怪技能则返回 null（退回走到脸上）。
+    /// </summary>
+    private string? ResolvePullCommand(IPlayerCharacter? player)
+    {
+        if (!string.IsNullOrWhiteSpace(config.PullActionCommand))
+            return config.PullActionCommand;
+
+        if (player is null)
+            return null;
+
+        var jobId = player.ClassJob.RowId;
+        if (PullActions.ByJob.TryGetValue(jobId, out var skill) && !string.IsNullOrWhiteSpace(skill))
+            return $"/ac \"{skill}\"";
+
+        return null;
+    }
     private float TrapAvoidRadiusCfg => MathF.Max(0.1f, config.TrapAvoidRadius);
     private int ChestInteractIntervalMs => Math.Max(50, config.ChestInteractIntervalMs);
     private bool nextLevelBool = false;
@@ -125,6 +153,17 @@ public sealed class AutoPalController
     private bool onlineSyncInProgress = false;
     private DateTime nextOnlineFetchAt = DateTime.MinValue;
     private bool IsOnlineMode => config.BlindSyncMode == BlindSyncMode.Online;
+
+    // 联机盲踩：异步“预定点位”状态机
+    // 目的：避免在游戏主线程上同步等待服务器响应（高延迟时会卡帧）。
+    // 主线程只发起请求并轮询结果，真正的 HTTP 在后台线程完成。
+    // 写入顺序（后台线程 finally 内）：先写 reserveSucceeded / reservePendingKey，
+    // 最后写 reserveInFlight=false，配合 volatile 的 release 语义保证主线程读到一致结果。
+    private volatile bool reserveInFlight = false;   // 是否有一个 reserve 请求在路上
+    private volatile bool reserveHasResult = false;  // 是否有一个已完成、待主线程处理的结果
+    private volatile bool reserveSucceeded = false;  // 上一次已完成请求是否抢到
+    private Vector3? reservePendingCandidate = null; // 正在/刚刚预定的候选点（仅主线程读写）
+    private volatile int reserveGeneration = 0;      // 换层/重置时自增，作废在路上的旧请求结果
 
     // Key
     private readonly IKeyState keyState;
@@ -753,10 +792,39 @@ public sealed class AutoPalController
         var enemy = FindNearestEnemy(pos, EnemySearchRadius);
         if (enemy is not null)
         {
-            SetIntent("发现怪物：前往并交给 BMRAI");
             var ex = enemy.Position.X - pos.X;
             var ez = enemy.Position.Z - pos.Z;
             var edist = MathF.Sqrt(ex * ex + ez * ez);
+
+            // 远程开怪：走进 PullRange 内就停下、锁定目标、用当前职业的远程技能开怪，避免脸开
+            var pullCommand = ResolvePullCommand(player);
+            if (config.PullRange > 0f && pullCommand is not null && edist <= PullRange)
+            {
+                SetIntent($"发现怪物：{edist:0.0}m 内远程开怪");
+
+                if (navigator.IsBusy)
+                    navigator.Stop();
+
+                // 锁定最近的怪作为技能目标
+                if (targetManager.Target?.GameObjectId != enemy.GameObjectId)
+                    targetManager.Target = enemy;
+
+                // 节流发开怪指令，避免每帧狂点（进战后由顶部战斗分支交给 BMRAI）
+                var now = DateTime.UtcNow;
+                if (now >= nextPullActionAt)
+                {
+                    TryCommand(pullCommand);
+                    nextPullActionAt = now.AddMilliseconds(PullActionIntervalMs);
+
+                    if (config.devMode)
+                        log.Information("[AutoPalExplorer] 远程开怪：目标={Name}, 距离={Dist:0.00}, 执行指令 {Cmd}。",
+                            enemy.Name.TextValue, edist, pullCommand);
+                }
+
+                return;
+            }
+
+            SetIntent("发现怪物：前往并交给 BMRAI");
 
             if (config.devMode)
                 log.Information("[AutoPalExplorer] 找到最近敌人 Name={Name}, 距离={Dist:0.00}，发送导航到敌人位置。",
@@ -764,14 +832,10 @@ public sealed class AutoPalController
 
             if (!navigator.IsBusy || IsDifferentTarget(currentTarget, enemy.Position, 1.0f))
             {
-                if (config.devMode)
-                    log.Information("[AutoPalExplorer] 导航至已激活传送装置。");
                 navigator.Stop();
                 navigator.TryMoveTo(enemy.Position);
             }
 
-            // navigator.Stop();
-            // navigator.TryMoveTo(enemy.Position);
             return;
         }
 
@@ -1119,6 +1183,12 @@ public sealed class AutoPalController
     /// </summary>
     private bool HandleBossFloorQueueing(Vector3 pos)
     {
+        // 每帧先尝试点掉本流程会弹出的确认窗口：
+        // - 与出口(2005809)交互后弹出的 SelectYesno -> 0
+        // - 与机关(2014758)交互后弹出的 DeepDungeonMenu -> 0，随后的 SelectYesno -> 0
+        // 若点击失败（窗口还没出来）就等一会下一帧再试，直到 NotifyChallengeRequestSent 结束流程。
+        TryConfirmBossQueueAddons();
+
         var npc = FindObjectByBaseId(ObjectIds.NextPilgrimNpcBaseId);
         if (npc is not null)
         {
@@ -1179,6 +1249,41 @@ public sealed class AutoPalController
 
         // 这里仍返回 true，让通用逻辑不要乱跑，直到 NotifyChallengeRequestSent 把 isBossFloor 清掉。
         return true;
+    }
+
+    /// <summary>
+    /// 点掉 Boss 排队流程里会弹出的确认窗口：
+    /// - DeepDungeonMenu -> Callback.Fire(a, true, 0)
+    /// - SelectYesno     -> Callback.Fire(a, true, 0)
+    /// 带节流，避免每帧对同一个窗口狂点。返回是否点了其中一个。
+    /// </summary>
+    private unsafe bool TryConfirmBossQueueAddons()
+    {
+        var now = DateTime.UtcNow;
+        if (now < nextBossAddonFireAt)
+            return false;
+
+        if (TryGetAddonByName<AtkUnitBase>("DeepDungeonMenu", out var menu) && IsAddonReady(menu))
+        {
+            Callback.Fire(menu, true, 0);
+            nextBossAddonFireAt = now.AddSeconds(1.0);
+
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] [Boss层] [Queue] 点击 DeepDungeonMenu -> 0。");
+            return true;
+        }
+
+        if (TryGetAddonByName<AtkUnitBase>("SelectYesno", out var yn) && IsAddonReady(yn))
+        {
+            Callback.Fire(yn, true, 0);
+            nextBossAddonFireAt = now.AddSeconds(1.0);
+
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] [Boss层] [Queue] 点击 SelectYesno -> 0。");
+            return true;
+        }
+
+        return false;
     }
 
     private unsafe void TryInteractWithObject(IGameObject obj, string purpose)
@@ -1670,6 +1775,14 @@ public sealed class AutoPalController
         blindLastProgressPos = Vector3.Zero;
         blindLastProgressCheckAt = DateTime.MinValue;
 
+        // 丢弃任何进行中/未处理的预定结果，避免跨层残留。
+        // 自增世代号：让已在路上的后台请求完成时校验失败，从而不再写回状态位。
+        reserveGeneration++;
+        reservePendingCandidate = null;
+        reserveHasResult = false;
+        reserveInFlight = false;
+        reserveSucceeded = false;
+
         if (IsOnlineMode)
         {
             OnlineClearIgnoredOnServer();
@@ -2117,15 +2230,93 @@ public sealed class AutoPalController
         });
     }
 
-    private bool TryReserveKeyOnServer(long key)
+    /// <summary>
+    /// 联机模式下非阻塞地选定盲踩目标点。只在主线程调用。
+    /// 状态机：
+    /// - 有请求在路上 (reserveInFlight)：本帧什么都不做，返回 false（还没拿到目标）。
+    /// - 有已完成结果 (reserveHasResult)：
+    ///     成功  -> 设为 currentBlindTarget，返回 true；
+    ///     失败  -> 本地忽略该点，继续本帧发起下一个候选点的预定，返回 false。
+    /// - 空闲：挑一个候选点，发起后台预定，返回 false。
+    /// 返回 true 表示已经拿到一个可用的 currentBlindTarget。
+    /// </summary>
+    private bool TryPickBlindTargetOnline(Vector3 playerPos)
     {
+        // 1) 处理已完成的预定结果
+        if (reserveHasResult)
+        {
+            reserveHasResult = false;
+            var candidate = reservePendingCandidate;
+            reservePendingCandidate = null;
+
+            if (reserveSucceeded && candidate is { } okPos)
+            {
+                currentBlindTarget = okPos;
+                blindArrivedAt = DateTime.MinValue;
+                blindLastProgressPos = playerPos;
+                blindLastProgressCheckAt = DateTime.UtcNow;
+
+                if (config.devMode)
+                {
+                    log.Information("[AutoPalExplorer] 盲踩：预定成功，选择新目标 ({X:0.00}, {Y:0.00}, {Z:0.00})，Key={Key}。",
+                        okPos.X, okPos.Y, okPos.Z, PackBlindKey(okPos));
+                }
+                return true;
+            }
+
+            // 抢不到：本地也忽略这个点，稍后（下面）尝试下一个候选点
+            if (candidate is { } failPos)
+            {
+                IgnoreBlindLocation(failPos);
+                if (config.devMode)
+                {
+                    log.Information("[AutoPalExplorer] 盲踩：目标 ({X:0.00}, {Y:0.00}, {Z:0.00}) 已被占用，尝试下一个。",
+                        failPos.X, failPos.Y, failPos.Z);
+                }
+            }
+        }
+
+        // 2) 已经有请求在路上：等结果，本帧不再发起、也不阻塞
+        if (reserveInFlight)
+            return false;
+
+        // 3) 空闲：挑下一个候选点并发起后台预定
+        var next = GetNextBlindLocation(playerPos, config.BlindMaxDistance);
+        if (next is null)
+        {
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] 盲踩：没有更多可踩的坐标。");
+            return false;
+        }
+
+        StartReserveKeyOnServer(next.Value);
+        return false;
+    }
+
+    /// <summary>
+    /// 在后台线程向服务器发起“预定点位”请求，不阻塞主线程。
+    /// 完成后写回 reserveSucceeded / reserveHasResult，并最后清 reserveInFlight。
+    /// </summary>
+    private void StartReserveKeyOnServer(Vector3 candidate)
+    {
+        var key = PackBlindKey(candidate);
+        reservePendingCandidate = candidate;
+        reserveInFlight = true;
+        reserveHasResult = false;
+        var gen = reserveGeneration; // 捕获本次请求的世代，完成时校验是否已被换层作废
+
         var apiKey = config.OnlineApiKey ?? string.Empty;
         if (string.IsNullOrWhiteSpace(apiKey))
-            return false;
+        {
+            // 没配置 api_key：视为预定失败，交回主线程处理（会本地忽略后继续）
+            reserveSucceeded = false;
+            reserveHasResult = true;
+            reserveInFlight = false;
+            return;
+        }
 
         var territory = clientState.TerritoryType;
         var url = $"{OnlineServerUrl}/ignored/reserve";
-
         var payload = new OnlineIgnoredAddRequest
         {
             ApiKey = apiKey,
@@ -2133,59 +2324,68 @@ public sealed class AutoPalController
             Keys = new[] { key }
         };
 
-        try
+        _ = Task.Run(async () =>
         {
-            var json = JsonSerializer.Serialize(payload);
-            using var content = new StringContent(json, Encoding.UTF8, "application/json");
-
-            // 注意：这里是同步调用，会在游戏主线程上阻塞一点时间
-            using var resp = httpClient.PostAsync(url, content).GetAwaiter().GetResult();
-            if (!resp.IsSuccessStatusCode)
+            var ok = false;
+            try
             {
-                if (config.devMode)
-                    log.Warning("[AutoPalExplorer] 联机盲踩：reserve HTTP {Code}", resp.StatusCode);
-                return false;
-            }
+                var json = JsonSerializer.Serialize(payload);
+                using var content = new StringContent(json, Encoding.UTF8, "application/json");
+                using var resp = await httpClient.PostAsync(url, content).ConfigureAwait(false);
 
-            var text = resp.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-            var dto = JsonSerializer.Deserialize<OnlineIgnoredReserveResponse>(text);
-            if (dto == null)
-            {
-                if (config.devMode)
-                    log.Warning("[AutoPalExplorer] 联机盲踩：reserve 解析失败，返回为空。");
-                return false;
-            }
-
-            if (!dto.Ok)
-            {
-                if (config.devMode)
+                if (!resp.IsSuccessStatusCode)
                 {
-                    log.Information("[AutoPalExplorer] 联机盲踩：reserve 被拒绝，Taken={TakenCount}，Key={Key}",
-                        dto.Taken?.Length ?? 0, key);
+                    if (config.devMode)
+                        log.Warning("[AutoPalExplorer] 联机盲踩：reserve HTTP {Code}", resp.StatusCode);
                 }
-                return false;
-            }
+                else
+                {
+                    var text = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    var dto = JsonSerializer.Deserialize<OnlineIgnoredReserveResponse>(text);
+                    if (dto is null)
+                    {
+                        if (config.devMode)
+                            log.Warning("[AutoPalExplorer] 联机盲踩：reserve 解析失败，返回为空。");
+                    }
+                    else if (!dto.Ok)
+                    {
+                        if (config.devMode)
+                            log.Information("[AutoPalExplorer] 联机盲踩：reserve 被拒绝，Taken={TakenCount}，Key={Key}",
+                                dto.Taken?.Length ?? 0, key);
+                    }
+                    else
+                    {
+                        ok = true;
+                        // 成功抢到：本地也加入 ignoredBlindLocations，避免后面再选到
+                        lock (ignoredBlindLocations)
+                        {
+                            ignoredBlindLocations.Add(key);
+                        }
 
-            // 成功抢到：本地也加入 ignoredBlindLocations，避免后面再选到
-            lock (ignoredBlindLocations)
+                        if (config.devMode)
+                            log.Information("[AutoPalExplorer] 联机盲踩：reserve 成功，Key={Key}，服务器总数={Count}",
+                                key, dto.Count);
+                    }
+                }
+            }
+            catch (Exception ex)
             {
-                ignoredBlindLocations.Add(key);
+                if (config.devMode)
+                    log.Warning($"[AutoPalExplorer] 联机盲踩：reserve 异常：{ex.Message}");
             }
-
-            if (config.devMode)
+            finally
             {
-                log.Information("[AutoPalExplorer] 联机盲踩：reserve 成功，Key={Key}，服务器总数={Count}",
-                    key, dto.Count);
+                // 换层/重置已经作废了这次请求：丢弃结果，也不要动状态位
+                // （否则可能覆盖掉换层后新发起的请求）
+                if (gen == reserveGeneration)
+                {
+                    // 顺序很重要：先写结果，最后放开 inflight（volatile release 保证主线程可见性）
+                    reserveSucceeded = ok;
+                    reserveHasResult = true;
+                    reserveInFlight = false;
+                }
             }
-
-            return true;
-        }
-        catch (Exception ex)
-        {
-            if (config.devMode)
-                log.Warning($"[AutoPalExplorer] 联机盲踩：reserve 异常：{ex.Message}");
-            return false;
-        }
+        });
     }
 
 
@@ -2219,65 +2419,39 @@ public sealed class AutoPalController
         // ====== 关键：当前没有目标时，先抢点 ======
         if (currentBlindTarget is null)
         {
-            const int MaxAttempts = 20; // 防止死循环，最多尝试找 20 个候选点
-            var triedAny = false;
-
-            for (int attempt = 0; attempt < MaxAttempts; attempt++)
+            if (IsOnlineMode)
             {
+                // 联机模式：预定要走网络，绝不能在主线程上同步等待（高延迟会卡帧）。
+                // 改为非阻塞状态机：本帧最多发起一个后台预定请求，然后立刻返回，
+                // 结果由后续帧轮询处理。
+                if (!TryPickBlindTargetOnline(playerPos))
+                {
+                    // 还没抢到目标（请求在路上 / 没更多点）：盲踩逻辑占用本帧但不阻塞。
+                    return true;
+                }
+            }
+            else
+            {
+                // 本地模式：没有网络，直接同步选点即可。
                 var next = GetNextBlindLocation(playerPos, config.BlindMaxDistance);
                 if (next is null)
                 {
-                    if (!triedAny && config.devMode)
+                    if (config.devMode)
                         log.Information("[AutoPalExplorer] 盲踩：没有更多可踩的坐标。");
                     return false;
                 }
 
-                triedAny = true;
                 var candidate = next.Value;
-                var key = PackBlindKey(candidate);
+                currentBlindTarget = candidate;
+                blindArrivedAt = DateTime.MinValue;
+                blindLastProgressPos = playerPos;
+                blindLastProgressCheckAt = DateTime.UtcNow;
 
-                bool reserved = true;
-
-                if (IsOnlineMode)
-                {
-                    // 真·预定：先去服务器抢一手
-                    reserved = TryReserveKeyOnServer(key);
-                }
-
-                if (reserved)
-                {
-                    // 抢到了 / 或者本地模式直接用
-                    currentBlindTarget = candidate;
-                    blindArrivedAt = DateTime.MinValue;
-                    blindLastProgressPos = playerPos;
-                    blindLastProgressCheckAt = DateTime.UtcNow;
-
-                    if (config.devMode)
-                    {
-                        log.Information("[AutoPalExplorer] 盲踩：选择新目标 ({X:0.00}, {Y:0.00}, {Z:0.00})，Key={Key}。",
-                            candidate.X, candidate.Y, candidate.Z, key);
-                    }
-                    break;
-                }
-                else
-                {
-                    // 抢不到 = 已被别人预定 / 已在 ignored，直接在本地也忽略掉，找下一个
-                    IgnoreBlindLocation(candidate);
-
-                    if (config.devMode)
-                    {
-                        log.Information("[AutoPalExplorer] 盲踩：目标 ({X:0.00}, {Y:0.00}, {Z:0.00}) 已被其它玩家占用，尝试下一个。",
-                            candidate.X, candidate.Y, candidate.Z);
-                    }
-                }
-            }
-
-            if (currentBlindTarget is null)
-            {
-                // 尝试了 MaxAttempts 还是没抢到
                 if (config.devMode)
-                    log.Information("[AutoPalExplorer] 盲踩：多次尝试预定都失败，放弃本层盲踩。");
-                return false;
+                {
+                    log.Information("[AutoPalExplorer] 盲踩：选择新目标 ({X:0.00}, {Y:0.00}, {Z:0.00})，Key={Key}。",
+                        candidate.X, candidate.Y, candidate.Z, PackBlindKey(candidate));
+                }
             }
         }
 

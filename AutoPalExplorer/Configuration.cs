@@ -55,7 +55,17 @@ namespace AutoPalExplorer
 
         // 找怪范围
         public float EnemySearchRadius { get; set; } = 500.0f;
-        
+
+        // ===== 远程开怪（避免脸开） =====
+        // 走到怪物这个距离（米）以内就停下用远程技能开怪；填 <=0 表示沿用旧的“走到脸上”行为
+        public float PullRange { get; set; } = 5.0f;
+
+        // 开怪指令（例如 /ac "炽热光辉" 或某个宏）。留空则不使用远程开怪，退回“走到脸上交给 BMRAI”
+        public string PullActionCommand { get; set; } = "";
+
+        // 开怪指令的最小重复间隔（毫秒），避免每帧狂点
+        public int PullActionIntervalMs { get; set; } = 1500;
+
         // 使用魔陶器
         public bool UsingPomander { get; set; } = true;
 

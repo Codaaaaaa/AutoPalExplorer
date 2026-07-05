@@ -263,6 +263,35 @@ namespace AutoPalExplorer
                     config.Save();
                 }
 
+                // ===== 远程开怪 =====
+                // PullRange
+                float pullRange = config.PullRange;
+                if (ImGui.DragFloat("远程开怪距离 (m)", ref pullRange, 0.5f, 0.0f, 30.0f, "%.1f"))
+                {
+                    config.PullRange = pullRange;
+                    config.Save();
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("走到怪物这个距离内就停下用远程技能开怪；填 0 表示沿用旧的走到脸上行为。");
+
+                // PullActionCommand（留空则按当前职业自动选开怪技能）
+                string pullCmd = config.PullActionCommand ?? string.Empty;
+                if (ImGui.InputText("开怪指令(可选,覆盖职业表)", ref pullCmd, 128))
+                {
+                    config.PullActionCommand = pullCmd;
+                    config.Save();
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("留空则按当前职业自动选开怪技能（骑士投盾/诗人强力射击…）。\n填了则强制用这个指令，例如 /ac \"炽热光辉\" 或某个宏。\n该职业无远程技能（如武僧/龙骑等）时退回走到脸上交给 BMRAI。");
+
+                // PullActionIntervalMs
+                int pullInterval = config.PullActionIntervalMs;
+                if (ImGui.DragInt("开怪指令间隔 (ms)", ref pullInterval, 50, 200, 5000))
+                {
+                    config.PullActionIntervalMs = Math.Max(200, pullInterval);
+                    config.Save();
+                }
+
                 // TrapAvoidRadius
                 float trapRadius = config.TrapAvoidRadius;
                 if (ImGui.DragFloat("陷阱避让半径", ref trapRadius, 0.1f, 0.3f, 10.0f, "%.1f"))

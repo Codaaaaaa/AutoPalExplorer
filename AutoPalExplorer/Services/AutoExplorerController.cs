@@ -44,6 +44,20 @@ public sealed class AutoPalController
 
     public bool IsRunning { get; private set; }
 
+    // 最近一次 AI 意图（用于在配置窗口“内部变量”里查看，替代满屏 xllog）
+    private string lastIntent = "空闲";
+    private DateTime lastIntentAt = DateTime.MinValue;
+    public string LastIntent => lastIntent;
+    public DateTime LastIntentAt => lastIntentAt;
+
+    private void SetIntent(string intent)
+    {
+        lastIntent = intent;
+        lastIntentAt = DateTime.Now;
+        if (config.devMode)
+            log.Information("[AutoPalExplorer][意图] {Intent}", intent);
+    }
+
     private bool bmraiOn;
     private uint lastTerritoryType;
     private bool hasOpenBurinedChest = false;
@@ -470,6 +484,7 @@ public sealed class AutoPalController
         // 1. 战斗状态：交给 BMRAI，暂停导航
         if (inCombat)
         {
+            SetIntent("战斗中：交给 BMRAI 处理，暂停导航");
             if (config.devMode)
                 log.Information("[AutoPalExplorer] 当前处于战斗中，交给 BMRAI 处理移动/战斗。");
 
@@ -498,6 +513,7 @@ public sealed class AutoPalController
         // 跟车模式：非 Boss 楼层不执行任何探索逻辑，直接返回
         if (IsFollowMode && !isBossFloor && !isBossFloorQueueing)
         {
+            SetIntent("跟车模式：非 Boss 楼层待命");
             if (config.devMode)
                 log.Information("[AutoPalExplorer] 跟车模式：非 Boss 楼层，跳过自动探索逻辑。");
             return;
@@ -580,6 +596,7 @@ public sealed class AutoPalController
                     if (navigator.IsBusy)
                         navigator.Stop();
 
+                    SetIntent("再生祭坛：交互（复活阵亡队友）");
                     if (regenObj is not null && regenObj.IsTargetable)
                     {
                         TryInteractWithObject(regenObj, "再生祭坛");
@@ -592,6 +609,7 @@ public sealed class AutoPalController
                 // 不在范围内：导航过去（带简单避陷阱）
                 if (!navigator.IsBusy || IsDifferentTarget(currentTarget, rp, 1.0f))
                 {
+                    SetIntent("再生祭坛：前往（有队友阵亡）");
                     if (config.devMode)
                         log.Information("[AutoPalExplorer] 导航至再生祭坛。");
 
@@ -618,6 +636,7 @@ public sealed class AutoPalController
             // 在触发半径内：停止移动，只等触发，直接吃掉这一帧后续逻辑
             if (distSqB <= BuriedChestDoneRadius * BuriedChestDoneRadius)
             {
+                SetIntent("埋藏宝藏：已到范围内，等待触发");
                 if (navigator.IsBusy)
                 {
                     navigator.Stop();
@@ -635,6 +654,7 @@ public sealed class AutoPalController
             // 不在范围内：作为最高优先级目标引路
             if (!navigator.IsBusy || IsDifferentTarget(currentTarget, buried.Position, 0.5f))
             {
+                SetIntent("埋藏宝藏：前往");
                 if (config.devMode)
                     log.Information("[AutoPalExplorer] 导航至埋藏的宝藏。");
 
@@ -657,19 +677,28 @@ public sealed class AutoPalController
             if (!pomanderManager.HasBuriedBuff && !hasOpenBurinedChest)
             {
                 if (TryHandleBlindBuriedSearch(pos))
+                {
+                    SetIntent("盲踩：前往疑似埋藏宝藏点");
                     return; // 被盲踩逻辑接管，本帧不走后续宝箱/门/贴墙
+                }
             }
         }
-        
+
         // ==== 3.0c 锁定的普通宝箱（防止宝箱和门/敌人之间来回切） ====
         if (HandleLockedChest(pos, currentTarget))
+        {
+            SetIntent("前往锁定中的宝箱");
             return;
+        }
 
         // ==== 3.1 宝箱（优先度：有就去） ====
         if (FindNextChestToOpen(pos) is { } chest)
         {
             if (HandleChest(pos, chest, currentTarget))
+            {
+                SetIntent("前往 / 开启宝箱");
                 return;
+            }
         }
 
         // ==== 3.2 激活传送装置（最高优先级） ====
@@ -698,6 +727,7 @@ public sealed class AutoPalController
 
             if (distSq <= ExitStopRadius * ExitStopRadius)
             {
+                SetIntent("传送装置：已到达，等待");
                 if (navigator.IsBusy)
                 {
                     navigator.Stop();
@@ -709,6 +739,7 @@ public sealed class AutoPalController
 
             if (!navigator.IsBusy || IsDifferentTarget(currentTarget, ep, 1.0f))
             {
+                SetIntent("前往激活的传送装置");
                 if (config.devMode)
                     log.Information("[AutoPalExplorer] 导航至激活传送装置位置。");
                 navigator.Stop();
@@ -722,6 +753,7 @@ public sealed class AutoPalController
         var enemy = FindNearestEnemy(pos, EnemySearchRadius);
         if (enemy is not null)
         {
+            SetIntent("发现怪物：前往并交给 BMRAI");
             var ex = enemy.Position.X - pos.X;
             var ez = enemy.Position.Z - pos.Z;
             var edist = MathF.Sqrt(ex * ex + ez * ez);
@@ -756,17 +788,20 @@ public sealed class AutoPalController
 
             if (!wallFollower.TryStep())
             {
+                SetIntent("贴墙探索：无可探索路径");
                 log.Warning("[AutoPalExplorer] 无可探索路径");
                 // Stop();
             }
             else
             {
+                SetIntent("贴墙探索：前往下一探索点");
                 if (config.devMode)
                     log.Information("[AutoPalExplorer] 贴墙探索已生成新移动目标。");
             }
         }
         else
         {
+            SetIntent("沿当前路径移动中");
             if (config.devMode)
                 log.Information("[AutoPalExplorer] Navigator 正在移动中，保持当前路径。");
         }
@@ -983,6 +1018,7 @@ public sealed class AutoPalController
                 log.Information("[AutoPalExplorer] [Boss层] 检测到 Boss Name={Name}, 距离={Dist:0.00}。",
                     boss.Name.TextValue, dist);
 
+            SetIntent($"Boss 层：前往 / 攻击 Boss（{dist:0.0} 格）");
             // 距离较远：导航过去
             if (!navigator.IsBusy || IsDifferentTarget(navigator.CurrentTarget, boss.Position, 1.0f))
             {
@@ -1019,6 +1055,7 @@ public sealed class AutoPalController
 
             if (distSq > ExitStopRadius * ExitStopRadius)
             {
+                SetIntent("Boss 层：Boss 已清，前往出口");
                 if (!navigator.IsBusy || IsDifferentTarget(navigator.CurrentTarget, exitObj.Position, 1.0f))
                 {
                     navigator.Stop();
@@ -1095,6 +1132,7 @@ public sealed class AutoPalController
 
             if (distSq > ExitStopRadius * ExitStopRadius)
             {
+                SetIntent("Boss 层：前往“挑战下一朝圣路”NPC");
                 if (!navigator.IsBusy || IsDifferentTarget(navigator.CurrentTarget, npc.Position, 0.5f))
                 {
                     navigator.Stop();
@@ -1216,18 +1254,25 @@ public sealed class AutoPalController
             return; // 只有车头模式自动进本
 
         if (entrySubmitted)
+        {
+            SetIntent("地宫入口：已发送参加申请，等待进本");
             return; // 申请已发出
+        }
 
         if (entryTaskManager.IsBusy)
+        {
+            SetIntent("地宫入口：正在处理进本菜单");
             return; // UI 序列进行中，等它跑完
+        }
 
         var dist = (pos - EntryPoint).Length();
         if (dist > EntryReachRadius)
         {
+            SetIntent($"地宫入口：flyto 接近入口（{dist:0.0} 格）");
             var now = DateTime.UtcNow;
             if (now >= nextEntryFlytoAt)
             {
-                TryCommand("/vnav flyto 424.2 89.4 -772.7");
+                TryCommand("/vnav moveto 424.2 89.4 -772.7");
                 nextEntryFlytoAt = now.AddSeconds(2);
 
                 if (config.devMode)
@@ -1245,6 +1290,7 @@ public sealed class AutoPalController
         }
 
         // 停止导航后开始 UI 交互序列
+        SetIntent("地宫入口：交互并处理进本菜单");
         TryCommand("/vnav stop");
         EnqueueEntrySequence(entryObj.GameObjectId);
 

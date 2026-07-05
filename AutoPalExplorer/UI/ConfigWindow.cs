@@ -359,10 +359,21 @@ namespace AutoPalExplorer
 
             if (ImGui.CollapsingHeader("内部变量", ImGuiTreeNodeFlags.DefaultOpen))
             {
-                
+                // === 最近一次 AI 意图 ===
+                ImGui.TextUnformatted("最近一次 AI 意图：");
+                ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.3f, 0.9f, 1.0f, 1.0f));
+                ImGui.TextWrapped(string.IsNullOrEmpty(controller.LastIntent) ? "(无)" : controller.LastIntent);
+                ImGui.PopStyleColor();
+
+                if (controller.LastIntentAt != DateTime.MinValue)
+                {
+                    var ago = DateTime.Now - controller.LastIntentAt;
+                    ImGui.TextDisabled($"更新于 {controller.LastIntentAt:HH:mm:ss}（{ago.TotalSeconds:0.0}s 前）");
+                }
+
                 ImGui.Spacing();
                 ImGui.Separator();
-                
+
                 bool buried = pomanderManager.HasBuriedBuff;
                 ImGui.TextUnformatted("宝藏数量");
                 ImGui.TextUnformatted(controller.blindLocations.Count.ToString());

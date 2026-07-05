@@ -5,7 +5,7 @@ namespace AutoPalExplorer.Services;
 
 public sealed class Navigator
 {
-    private readonly IClientState clientState;
+    private readonly IObjectTable objectTable;
     private readonly VNavmeshClient vnavmesh;
     private readonly IPluginLog log;
 
@@ -17,9 +17,9 @@ public sealed class Navigator
     private const float MinProgressSq = 0.01f;      // 认为“有在动”的最小距离变化
     private const int MaxStagnantTicks = 120;       // 卡这么多帧就放弃当前目标
 
-    public Navigator(IClientState clientState, VNavmeshClient vnavmesh, IPluginLog log)
+    public Navigator(IObjectTable objectTable, VNavmeshClient vnavmesh, IPluginLog log)
     {
-        this.clientState = clientState;
+        this.objectTable = objectTable;
         this.vnavmesh = vnavmesh;
         this.log = log;
     }
@@ -63,7 +63,7 @@ public sealed class Navigator
         if (currentTarget is not { } target)
             return;
 
-        var player = clientState.LocalPlayer;
+        var player = objectTable.LocalPlayer;
         if (player is null)
         {
             Stop();

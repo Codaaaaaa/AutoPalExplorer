@@ -14,12 +14,12 @@ public static class WhiteListCheck
         "19014409517529691", // didi
     ];
 
-    public static bool IsPlayerAllowed(IClientState clientState)
+    public static bool IsPlayerAllowed(IPlayerState playerState)
     {
-        if (clientState == null)
+        if (playerState == null || !playerState.IsLoaded)
             return false;
 
-        var cid = clientState.LocalContentId;
+        var cid = playerState.ContentId;
 
         if (cid == 0)
             return false;

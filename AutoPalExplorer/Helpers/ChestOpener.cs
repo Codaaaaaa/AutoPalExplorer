@@ -37,7 +37,7 @@ namespace YourPlugin.Helpers
 
         private static bool IsPlayerReady()
         {
-            if (!ClientState.IsLoggedIn || ClientState.LocalPlayer == null)
+            if (!ClientState.IsLoggedIn || ObjectTable.LocalPlayer == null)
                 return false;
 
             // 这里可以按需要加战斗中 / 载入中 / 强制移动中等限制
@@ -46,7 +46,7 @@ namespace YourPlugin.Helpers
 
         private static IGameObject? GetNearestTreasureCofferWithin(float maxDistance)
         {
-            var player = ClientState.LocalPlayer!;
+            var player = ObjectTable.LocalPlayer!;
             IGameObject? target = null;
             var bestDist = maxDistance * maxDistance; // 用平方避免开根号
 

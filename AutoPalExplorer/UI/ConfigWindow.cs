@@ -467,7 +467,7 @@ namespace AutoPalExplorer
                 ImGui.Separator();
             }
 
-            var player = Plugin.ClientState.LocalPlayer;
+            var player = Plugin.ObjectTable.LocalPlayer;
             if (player == null)
             {
                 ImGui.TextUnformatted("玩家未加载");
@@ -476,7 +476,7 @@ namespace AutoPalExplorer
             }
 
             // 获取 LocalContentId
-            var cid = Plugin.ClientState.LocalContentId;
+            var cid = Plugin.PlayerState.ContentId;
 
             ImGui.TextUnformatted("当前角色 LocalContentId:");
             ImGui.Spacing();
@@ -486,7 +486,7 @@ namespace AutoPalExplorer
         }
         private void DrawPlayerStatusList()
         {
-            var player = Plugin.ClientState.LocalPlayer;
+            var player = Plugin.ObjectTable.LocalPlayer;
             if (player == null)
             {
                 ImGui.TextUnformatted("玩家不存在");

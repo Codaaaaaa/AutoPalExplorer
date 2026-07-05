@@ -214,7 +214,7 @@ public sealed class AutoPalController
             return;
         }
 
-        if (clientState.LocalPlayer is null)
+        if (objectTable.LocalPlayer is null)
         {
             log.Warning("[AutoPalExplorer] 无法启动：没有本地玩家。");
             return;
@@ -350,7 +350,7 @@ public sealed class AutoPalController
         if (!IsRunning)
             return;
 
-        var player = clientState.LocalPlayer;
+        var player = objectTable.LocalPlayer;
         if (player is null)
         {
             if (config.devMode)
@@ -781,7 +781,7 @@ public sealed class AutoPalController
         if (!ShouldOpenChest(chest.BaseId))
             return;
         
-        var player = clientState.LocalPlayer;
+        var player = objectTable.LocalPlayer;
         if (player == null)
             return;
 
@@ -1288,7 +1288,7 @@ public sealed class AutoPalController
             if (bc is not IBattleNpc bn)
                 continue;
 
-            if (bn.BattleNpcKind != Dalamud.Game.ClientState.Objects.Enums.BattleNpcSubKind.Enemy)
+            if (bn.BattleNpcKind != Dalamud.Game.ClientState.Objects.Enums.BattleNpcSubKind.Combatant)
                 continue;
 
             if (!bc.IsTargetable || bc.CurrentHp <= 0)
@@ -2152,17 +2152,14 @@ public sealed class AutoPalController
 
     private bool HasDeadOtherPlayer()
     {
-        var localId = clientState.LocalPlayer?.GameObjectId ?? 0;
+        var localId = objectTable.LocalPlayer?.GameObjectId ?? 0;
 
-        foreach (var obj in objectTable)
+        foreach (var ch in objectTable.PlayerObjects)
         {
-            if (obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Player)
-                continue;
-
-            if (obj.GameObjectId == localId)
+            if (ch.GameObjectId == localId)
                 continue; // 自己死了也没法走过去，就不算在这里
 
-            if (obj is ICharacter ch && ch.IsDead)
+            if (ch.IsDead)
                 return true;
         }
 

@@ -15,7 +15,7 @@ namespace AutoPalExplorer.Debug;
 public unsafe sealed class PomanderDebuggerEx : IDisposable
 {
     private readonly IPluginLog log;
-    private readonly IClientState clientState;
+    private readonly IObjectTable objectTable;
     private readonly Hook<UseActionDelegate>? hook;
     private readonly Dictionary<uint, CapturedUse> captured = new();
 
@@ -52,10 +52,10 @@ public unsafe sealed class PomanderDebuggerEx : IDisposable
         }
     }
 
-    public PomanderDebuggerEx(IPluginLog log, IGameInteropProvider interop, IClientState clientState)
+    public PomanderDebuggerEx(IPluginLog log, IGameInteropProvider interop, IObjectTable objectTable)
     {
         this.log = log;
-        this.clientState = clientState;
+        this.objectTable = objectTable;
 
         var ptr = (nint)ActionManager.Addresses.UseAction.Value;
         if (ptr == nint.Zero)
@@ -111,7 +111,7 @@ public unsafe sealed class PomanderDebuggerEx : IDisposable
             // - type: Action（因为 6870 在 Action 表）
             // - target: 自己（如果拿不到就 0）
             // - mode: Standard
-            var targetId = clientState.LocalPlayer?.GameObjectId ?? 0UL;
+            var targetId = objectTable.LocalPlayer?.GameObjectId ?? 0UL;
 
             info = new CapturedUse(
                 ActionType.Action,

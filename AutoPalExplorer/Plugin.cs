@@ -1,9 +1,7 @@
 ﻿using System;
 using System.Text.RegularExpressions;
 using Dalamud.Game.Command;
-using Dalamud.Game.Text;
 using Dalamud.Game.ClientState.Objects;
-using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
@@ -12,6 +10,7 @@ using System.Numerics;
 using System.Collections.Generic;
 using Dalamud.Interface;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Game.Chat;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 
 using AutoPalExplorer.Services;
@@ -41,6 +40,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IPartyList PartyList { get; private set; } = null!;
     [PluginService] internal static ITargetManager TargetManager { get; private set; } = null!;
     [PluginService] internal static IKeyState KeyState { get; private set; } = null!;
+    [PluginService] internal static IPlayerState PlayerState { get; private set; } = null!;
 
     private readonly Configuration config;
     private readonly AutoPalController controller;
@@ -55,7 +55,7 @@ public sealed class Plugin : IDalamudPlugin
     public Plugin()
     {
         // 白名单检查
-        isAllowed = WhiteListCheck.IsPlayerAllowed(ClientState);
+        isAllowed = WhiteListCheck.IsPlayerAllowed(PlayerState);
 
         // 加载配置
         config = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
@@ -63,11 +63,11 @@ public sealed class Plugin : IDalamudPlugin
 
         // 依赖
         var vnavmesh = new VNavmeshClient(PluginInterface, Log);
-        var navigator = new Navigator(ClientState, vnavmesh, Log);
+        var navigator = new Navigator(ObjectTable, vnavmesh, Log);
         var exitDetector = new ExitDetector(ObjectTable, Log);
-        var wallFollower = new WallFollower(ClientState, navigator, Log);
-        pomanderManager = new PomanderManager(ClientState, Log, CommandManager, config, ChatGui, Condition);
-        pomanderDebuggerEx = new PomanderDebuggerEx(Log, GameInteropProvider, ClientState);
+        var wallFollower = new WallFollower(ObjectTable, navigator, Log);
+        pomanderManager = new PomanderManager(ClientState, ObjectTable, Log, CommandManager, config, ChatGui, Condition);
+        pomanderDebuggerEx = new PomanderDebuggerEx(Log, GameInteropProvider, ObjectTable);
 
         controller = new AutoPalController(
             ClientState,
@@ -191,14 +191,9 @@ public sealed class Plugin : IDalamudPlugin
         
     }
 
-    private void OnChatMessage(
-        XivChatType type,
-        int timestamp,
-        ref SeString sender,
-        ref SeString message,
-        ref bool isHandled)
+    private void OnChatMessage(IHandleableChatMessage chatMessage)
     {
-        var text = message.TextValue;
+        var text = chatMessage.Message.TextValue;
         if (string.IsNullOrEmpty(text))
             return;
 

@@ -23,22 +23,10 @@
     </Reference>
   </ItemGroup>
 
-  <ItemGroup>
-    <Reference Include="Lumina">
-      <HintPath>$(DALAMUD_HOME)\Lumina.dll</HintPath>
-    </Reference>
-  </ItemGroup>
-
-  <ItemGroup>
-    <Reference Include="Lumina.Excel">
-      <HintPath>$(DALAMUD_HOME)\Lumina.Excel.dll</HintPath>
-    </Reference>
-  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.4" />
     <PackageReference Include="SQLitePCLRaw.core" Version="2.1.4" />
-    <PackageReference Include="DalamudPackager" Version="2.*" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>

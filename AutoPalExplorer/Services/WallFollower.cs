@@ -13,7 +13,7 @@ namespace AutoPalExplorer.Services;
 /// </summary>
 public sealed class WallFollower
 {
-    private readonly IClientState clientState;
+    private readonly IObjectTable objectTable;
     private readonly Navigator navigator;
     private readonly IPluginLog log;
 
@@ -24,9 +24,9 @@ public sealed class WallFollower
     private const float MaxStep = 150.0f;
     private const float MinMoveSq = 0.25f;
 
-    public WallFollower(IClientState clientState, Navigator navigator, IPluginLog log)
+    public WallFollower(IObjectTable objectTable, Navigator navigator, IPluginLog log)
     {
-        this.clientState = clientState;
+        this.objectTable = objectTable;
         this.navigator = navigator;
         this.log = log;
     }
@@ -38,7 +38,7 @@ public sealed class WallFollower
 
     public bool TryStep()
     {
-        var player = clientState.LocalPlayer;
+        var player = objectTable.LocalPlayer;
         if (player is null)
             return false;
 

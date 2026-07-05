@@ -13,6 +13,7 @@ namespace AutoPalExplorer.Services;
 public sealed class PomanderManager
 {
     private readonly IClientState clientState;
+    private readonly IObjectTable objectTable;
     private readonly IPluginLog log;
     private readonly IChatGui chatGui;
     private readonly ICommandManager commandManager;
@@ -37,9 +38,10 @@ public sealed class PomanderManager
     private long lastCheckTick = 0;
     private bool hasBuriedBuff = false;
     public bool HasBuriedBuff => hasBuriedBuff;
-    public PomanderManager(IClientState clientState, IPluginLog log, ICommandManager commandManager, Configuration config, IChatGui chatGui, ICondition condition)
+    public PomanderManager(IClientState clientState, IObjectTable objectTable, IPluginLog log, ICommandManager commandManager, Configuration config, IChatGui chatGui, ICondition condition)
     {
         this.clientState = clientState;
+        this.objectTable = objectTable;
         this.log = log;
         this.commandManager = commandManager;
         this.config = config;
@@ -149,7 +151,7 @@ public sealed class PomanderManager
         if (!MapIds.IsPilgrimsTraverse(clientState.TerritoryType))
             return;
 
-        if (clientState.LocalPlayer is not IPlayerCharacter player)
+        if (objectTable.LocalPlayer is not IPlayerCharacter player)
             return;
 
         // ---- 1. debuff 检测 ----

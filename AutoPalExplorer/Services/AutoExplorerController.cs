@@ -1,16 +1,23 @@
 using System;
 using System.Numerics;
 using System.Collections.Generic;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
+using System.Threading.Tasks;
+using System.IO;
+using System.Text.Json.Serialization;
+
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.ClientState.Objects;
 using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Game.ClientState.Keys;
 using Dalamud.Plugin.Services;
+
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.Game.Object;
 
-using System.IO;
 using SQLitePCL;
 
 using AutoPalExplorer.Helpers;
@@ -47,7 +54,7 @@ public sealed class AutoPalController
     private bool isBossFloor;
     private bool isBossFloorQueueing;
     private double ChallengeIntervalSeconds => MathF.Max(1.0f, config.ChallengeIntervalSeconds);
-    private readonly double BossExitInteractDelaySeconds = 8.0;
+    private readonly double BossExitInteractDelaySeconds = 2.0;
     private DateTime bossExitReachedAt = DateTime.MinValue;
     private DateTime nextChallengeAttemptAt = DateTime.MinValue;
     private float EnemySearchRadius => MathF.Max(1.0f, config.EnemySearchRadius);
@@ -79,16 +86,81 @@ public sealed class AutoPalController
     private DateTime blindLastProgressCheckAt = DateTime.MinValue;  // 上一次检查“卡住”的时间
     private static bool sqliteProviderInitialized = false;
 
-    private static readonly TimeSpan BlindWaitDuration = TimeSpan.FromSeconds(3); // 在点上站 3 秒
+    private TimeSpan BlindWaitDuration => TimeSpan.FromSeconds(MathF.Max(2.0f, config.BlindWaitDuration));
     private static readonly TimeSpan BlindStuckTimeout = TimeSpan.FromSeconds(2); // 2 秒没动就判定卡住
     private const float BlindArriveRadius = 0.6f;          // 认为“到点”的半径
     private const float BlindStuckMoveThreshold = 0.2f;    // 判定卡住时允许的移动距离（2D）
+
+    // ==== 联机盲踩同步 ====
+    private static readonly HttpClient httpClient = new(); // 整个插件共用一个
+    private bool onlineSyncInProgress = false;
+    private DateTime nextOnlineFetchAt = DateTime.MinValue;
+    private bool IsOnlineMode => config.BlindSyncMode == BlindSyncMode.Online;
 
     // Key
     private readonly IKeyState keyState;
     private readonly IFramework framework;
     private readonly IPartyList partyList;
     private readonly ITargetManager targetManager;
+
+
+    // 联机盲踩
+    private string OnlineServerUrl
+        => string.IsNullOrWhiteSpace(config.OnlineServerUrl)
+            ? "http://127.0.0.1:8080"
+            : config.OnlineServerUrl.TrimEnd('/');
+
+    // 联机 DTO
+    private sealed class OnlineIgnoredGetResponse
+    {
+        [JsonPropertyName("territory")]
+        public uint Territory { get; set; }
+
+        [JsonPropertyName("keys")]
+        public long[] Keys { get; set; } = Array.Empty<long>();
+    }
+    private sealed class OnlineIgnoredAddRequest
+    {
+        [JsonPropertyName("api_key")]
+        public string ApiKey { get; set; } = "";
+
+        [JsonPropertyName("territory")]
+        public uint Territory { get; set; }
+
+        [JsonPropertyName("keys")]
+        public long[] Keys { get; set; } = Array.Empty<long>();
+
+        [JsonPropertyName("test")]
+        public string Test { get; set; } = "Coda";
+    }
+
+    private sealed class OnlineIgnoredClearRequest
+    {
+        [JsonPropertyName("api_key")]
+        public string ApiKey { get; set; } = "";
+
+        [JsonPropertyName("territory")]
+        public uint Territory { get; set; }
+    }
+
+    private sealed class OnlineIgnoredReserveResponse
+    {
+        [JsonPropertyName("territory")]
+        public uint Territory { get; set; }
+
+        [JsonPropertyName("ok")]
+        public bool Ok { get; set; }
+
+        [JsonPropertyName("added")]
+        public long[] Added { get; set; } = Array.Empty<long>();
+
+        [JsonPropertyName("taken")]
+        public long[] Taken { get; set; } = Array.Empty<long>();
+
+        [JsonPropertyName("count")]
+        public int Count { get; set; }
+    }
+
 
     private static void EnsureSQLiteProvider()
     {
@@ -294,6 +366,8 @@ public sealed class AutoPalController
             Stop();
             return;
         }
+        // 在正确地图且正在运行时，如果是联机模式，每 2 秒从服务器拉一次 ignoredBlindLocations
+        // TickOnlineIgnoredSync();
 
         var inCombat = condition[ConditionFlag.InCombat];
         var pos = player.Position;
@@ -1390,6 +1464,11 @@ public sealed class AutoPalController
         blindArrivedAt = DateTime.MinValue;
         blindLastProgressPos = Vector3.Zero;
         blindLastProgressCheckAt = DateTime.MinValue;
+
+        if (IsOnlineMode)
+        {
+            OnlineClearIgnoredOnServer();
+        }
     }
     private void ResetStaticObjectsState()
     {
@@ -1397,6 +1476,42 @@ public sealed class AutoPalController
         savedRegenerationPos = null;
         exitActivatedByChat = false;
         regenerationActivated = false;
+    }
+
+    private void OnlineClearIgnoredOnServer()
+    {
+        var apiKey = config.OnlineApiKey ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(apiKey))
+            return;
+
+        var territory = clientState.TerritoryType;
+        var url = $"{OnlineServerUrl}/ignored/clear";
+
+        var payload = new OnlineIgnoredClearRequest
+        {
+            ApiKey = apiKey,
+            Territory = territory
+        };
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var json = JsonSerializer.Serialize(payload);
+                using var content = new StringContent(json, Encoding.UTF8, "application/json");
+                using var resp = await httpClient.PostAsync(url, content).ConfigureAwait(false);
+
+                if (!resp.IsSuccessStatusCode && config.devMode)
+                {
+                    log.Warning("[AutoPalExplorer] 联机盲踩：清空 ignored 失败 HTTP {Code}", resp.StatusCode);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (config.devMode)
+                    log.Warning($"[AutoPalExplorer] 联机盲踩：清空 ignored 异常：{ex.Message}");
+            }
+        });
     }
 
     private bool HandleChest(Vector3 playerPos, IGameObject chest, Vector3? currentTarget)
@@ -1724,16 +1839,150 @@ public sealed class AutoPalController
     }
 
     private bool IsBlindLocationIgnored(Vector3 p)
-        => ignoredBlindLocations.Contains(PackBlindKey(p));
+    {
+        var key = PackBlindKey(p);
+        lock (ignoredBlindLocations)
+        {
+            return ignoredBlindLocations.Contains(key);
+        }
+    }
+
 
     private void IgnoreBlindLocation(Vector3 p)
     {
-        ignoredBlindLocations.Add(PackBlindKey(p));
+        var key = PackBlindKey(p);
+        var added = false;
 
-        if (config.devMode)
-            log.Information("[AutoPalExplorer] 盲踩：忽略点位 ({X:0.00}, {Y:0.00}, {Z:0.00})。",
-                p.X, p.Y, p.Z);
+        lock (ignoredBlindLocations)
+        {
+            if (!ignoredBlindLocations.Contains(key))
+            {
+                ignoredBlindLocations.Add(key);
+                added = true;
+            }
+        }
+
+        if (added && config.devMode)
+        {
+            log.Information("[AutoPalExplorer] 盲踩：忽略点位 ({X:0.00}, {Y:0.00}, {Z:0.00})。", p.X, p.Y, p.Z);
+        }
+
+        // 联机模式：把新忽略的点推到服务器
+        // if (added && IsOnlineMode)
+        // {
+        //     PushIgnoredKeyToServer(key);
+        // }
     }
+
+    private void PushIgnoredKeyToServer(long key)
+    {
+        var apiKey = config.OnlineApiKey ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(apiKey))
+            return;
+
+        var territory = clientState.TerritoryType;
+        var url = $"{OnlineServerUrl}/ignored/add";
+
+        var payload = new OnlineIgnoredAddRequest
+        {
+            ApiKey = apiKey,
+            Territory = territory,
+            Keys = new[] { key }
+        };
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var json = JsonSerializer.Serialize(payload);
+                using var content = new StringContent(json, Encoding.UTF8, "application/json");
+                using var resp = await httpClient.PostAsync(url, content).ConfigureAwait(false);
+
+                if (!resp.IsSuccessStatusCode && config.devMode)
+                {
+                    log.Warning("[AutoPalExplorer] 联机盲踩：上报 ignored 点位失败 HTTP {Code}", resp.StatusCode);
+                    // log.Warning(url);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (config.devMode)
+                    log.Warning($"[AutoPalExplorer] 联机盲踩：上报 ignored 点位异常：{ex.Message}");
+            }
+        });
+    }
+
+    private bool TryReserveKeyOnServer(long key)
+    {
+        var apiKey = config.OnlineApiKey ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(apiKey))
+            return false;
+
+        var territory = clientState.TerritoryType;
+        var url = $"{OnlineServerUrl}/ignored/reserve";
+
+        var payload = new OnlineIgnoredAddRequest
+        {
+            ApiKey = apiKey,
+            Territory = territory,
+            Keys = new[] { key }
+        };
+
+        try
+        {
+            var json = JsonSerializer.Serialize(payload);
+            using var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+            // 注意：这里是同步调用，会在游戏主线程上阻塞一点时间
+            using var resp = httpClient.PostAsync(url, content).GetAwaiter().GetResult();
+            if (!resp.IsSuccessStatusCode)
+            {
+                if (config.devMode)
+                    log.Warning("[AutoPalExplorer] 联机盲踩：reserve HTTP {Code}", resp.StatusCode);
+                return false;
+            }
+
+            var text = resp.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+            var dto = JsonSerializer.Deserialize<OnlineIgnoredReserveResponse>(text);
+            if (dto == null)
+            {
+                if (config.devMode)
+                    log.Warning("[AutoPalExplorer] 联机盲踩：reserve 解析失败，返回为空。");
+                return false;
+            }
+
+            if (!dto.Ok)
+            {
+                if (config.devMode)
+                {
+                    log.Information("[AutoPalExplorer] 联机盲踩：reserve 被拒绝，Taken={TakenCount}，Key={Key}",
+                        dto.Taken?.Length ?? 0, key);
+                }
+                return false;
+            }
+
+            // 成功抢到：本地也加入 ignoredBlindLocations，避免后面再选到
+            lock (ignoredBlindLocations)
+            {
+                ignoredBlindLocations.Add(key);
+            }
+
+            if (config.devMode)
+            {
+                log.Information("[AutoPalExplorer] 联机盲踩：reserve 成功，Key={Key}，服务器总数={Count}",
+                    key, dto.Count);
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            if (config.devMode)
+                log.Warning($"[AutoPalExplorer] 联机盲踩：reserve 异常：{ex.Message}");
+            return false;
+        }
+    }
+
 
     /// <summary>
     /// 盲踩埋藏宝藏逻辑：
@@ -1760,38 +2009,80 @@ public sealed class AutoPalController
             return false;
 
         if (allBlindLocations.Count == 0 && config.BlindChestsWithTrap)
-            return false; 
+            return false;
 
-        // 如果当前没有目标，挑一个最近的
+        // ====== 关键：当前没有目标时，先抢点 ======
         if (currentBlindTarget is null)
         {
-            var next = GetNextBlindLocation(playerPos, config.BlindMaxDistance);
-            if (next is null)
+            const int MaxAttempts = 20; // 防止死循环，最多尝试找 20 个候选点
+            var triedAny = false;
+
+            for (int attempt = 0; attempt < MaxAttempts; attempt++)
             {
+                var next = GetNextBlindLocation(playerPos, config.BlindMaxDistance);
+                if (next is null)
+                {
+                    if (!triedAny && config.devMode)
+                        log.Information("[AutoPalExplorer] 盲踩：没有更多可踩的坐标。");
+                    return false;
+                }
+
+                triedAny = true;
+                var candidate = next.Value;
+                var key = PackBlindKey(candidate);
+
+                bool reserved = true;
+
+                if (IsOnlineMode)
+                {
+                    // 真·预定：先去服务器抢一手
+                    reserved = TryReserveKeyOnServer(key);
+                }
+
+                if (reserved)
+                {
+                    // 抢到了 / 或者本地模式直接用
+                    currentBlindTarget = candidate;
+                    blindArrivedAt = DateTime.MinValue;
+                    blindLastProgressPos = playerPos;
+                    blindLastProgressCheckAt = DateTime.UtcNow;
+
+                    if (config.devMode)
+                    {
+                        log.Information("[AutoPalExplorer] 盲踩：选择新目标 ({X:0.00}, {Y:0.00}, {Z:0.00})，Key={Key}。",
+                            candidate.X, candidate.Y, candidate.Z, key);
+                    }
+                    break;
+                }
+                else
+                {
+                    // 抢不到 = 已被别人预定 / 已在 ignored，直接在本地也忽略掉，找下一个
+                    IgnoreBlindLocation(candidate);
+
+                    if (config.devMode)
+                    {
+                        log.Information("[AutoPalExplorer] 盲踩：目标 ({X:0.00}, {Y:0.00}, {Z:0.00}) 已被其它玩家占用，尝试下一个。",
+                            candidate.X, candidate.Y, candidate.Z);
+                    }
+                }
+            }
+
+            if (currentBlindTarget is null)
+            {
+                // 尝试了 MaxAttempts 还是没抢到
                 if (config.devMode)
-                    log.Information("[AutoPalExplorer] 盲踩：没有更多可踩的 Type=2 坐标。");
+                    log.Information("[AutoPalExplorer] 盲踩：多次尝试预定都失败，放弃本层盲踩。");
                 return false;
             }
-
-            currentBlindTarget = next.Value;
-            blindArrivedAt = DateTime.MinValue;
-            blindLastProgressPos = playerPos;
-            blindLastProgressCheckAt = DateTime.UtcNow;
-
-            if (config.devMode)
-            {
-                var t = currentBlindTarget.Value;
-                log.Information("[AutoPalExplorer] 盲踩：选择新目标 ({X:0.00}, {Y:0.00}, {Z:0.00})。",
-                    t.X, t.Y, t.Z);
-            }
         }
+
+        // ====== 后面的逻辑保持不变：走路、到点等待、卡住检测 ======
 
         var target = currentBlindTarget.Value;
         var dx = target.X - playerPos.X;
         var dz = target.Z - playerPos.Z;
         var distSq = dx * dx + dz * dz;
 
-        // 1) 已经到点：停 5 秒，然后忽略这个点
         if (distSq <= BlindArriveRadius * BlindArriveRadius)
         {
             if (blindArrivedAt == DateTime.MinValue)
@@ -1807,8 +2098,8 @@ public sealed class AutoPalController
                 var elapsed = DateTime.UtcNow - blindArrivedAt;
                 if (elapsed >= BlindWaitDuration)
                 {
-                    // 停满 5 秒：通知控制器忽略当前位置（这个点）
                     IgnoreBlindLocation(target);
+                    TickOnlineIgnoredSync();
                     currentBlindTarget = null;
                     blindArrivedAt = DateTime.MinValue;
 
@@ -1817,11 +2108,9 @@ public sealed class AutoPalController
                 }
             }
 
-            // 不管有没有刚好等完，本帧都算盲踩接管
             return true;
         }
 
-        // 2) 还在路上：导航 & 卡住检测
         if (!navigator.IsBusy || IsDifferentTarget(navigator.CurrentTarget, target, 0.5f))
         {
             navigator.Stop();
@@ -1832,7 +2121,6 @@ public sealed class AutoPalController
         }
         else
         {
-            // 每 BlindStuckTimeout 秒检查一次有没有明显前进
             var now = DateTime.UtcNow;
             if ((now - blindLastProgressCheckAt) >= BlindStuckTimeout)
             {
@@ -1842,7 +2130,6 @@ public sealed class AutoPalController
 
                 if (moveSq < BlindStuckMoveThreshold * BlindStuckMoveThreshold)
                 {
-                    // 判定为卡住：通知控制器忽略当前位置（这个目标点），不再来了
                     if (config.devMode)
                         log.Information("[AutoPalExplorer] 盲踩：前往目标途中疑似卡住，忽略该盲踩点位。");
 
@@ -1960,4 +2247,68 @@ public sealed class AutoPalController
         }
     }
 
+    private void TickOnlineIgnoredSync()
+    {
+        if (!IsOnlineMode)
+            return;
+
+        // 没填 api_key 就不走联机逻辑
+        var apiKey = config.OnlineApiKey ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(apiKey))
+            return;
+
+        // 防止刷屏请求：每 2 秒一次，同时只允许一个请求在路上
+        // var now = DateTime.UtcNow;
+        // if (onlineSyncInProgress || now < nextOnlineFetchAt)
+        //     return;
+
+        // onlineSyncInProgress = true;
+        // nextOnlineFetchAt = now.AddSeconds(2);
+
+        var territory = clientState.TerritoryType;
+        var url = $"{OnlineServerUrl}/ignored?territory={territory}&api_key={Uri.EscapeDataString(apiKey)}";
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var resp = await httpClient.GetAsync(url).ConfigureAwait(false);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    if (config.devMode)
+                        log.Warning("[AutoPalExplorer] 联机盲踩：GET ignored 返回 {Code}", resp.StatusCode);
+                    return;
+                }
+
+                var text = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                // log.Warning(text);
+                var dto = JsonSerializer.Deserialize<OnlineIgnoredGetResponse>(text);
+                // log.Warning(dto.Keys.Length.ToString());
+                if (dto == null)
+                {
+                    log.Warning("dto null");
+                    return;
+                }
+
+                lock (ignoredBlindLocations)
+                {
+                    ignoredBlindLocations.Clear();
+                    foreach (var k in dto.Keys)
+                        ignoredBlindLocations.Add(k);
+                }
+
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] 联机盲踩：从服务器同步 {Count} 个 ignoredBlindLocations。", dto.Keys.Length);
+            }
+            catch (Exception ex)
+            {
+                if (config.devMode)
+                    log.Warning($"[AutoPalExplorer] 联机盲踩：同步 ignored 失败：{ex.Message}");
+            }
+            finally
+            {
+                onlineSyncInProgress = false;
+            }
+        });
+    }
 }

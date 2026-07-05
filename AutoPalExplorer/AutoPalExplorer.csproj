@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Project Sdk="Dalamud.NET.Sdk/13.0">
+<Project Sdk="Dalamud.NET.Sdk/15.0.0">
 
   <PropertyGroup>
-    <TargetFramework>net9.0-windows7.0</TargetFramework>
+    <TargetFramework>net10.0-windows7.0</TargetFramework>
     <RootNamespace>AutoPalExplorer</RootNamespace>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
@@ -19,25 +19,26 @@
 
   <ItemGroup>
     <Reference Include="ECommons">
-      <HintPath>E:\Github\AutoPalExplorer\AutoPalExplorer\lib\ECommons.dll</HintPath>
+      <HintPath>lib\ECommons.dll</HintPath>
     </Reference>
   </ItemGroup>
 
   <ItemGroup>
     <Reference Include="Lumina">
-      <HintPath>C:\Users\czy29\AppData\Roaming\XIVLauncherCN\addon\Hooks\dev\Lumina.dll</HintPath>
+      <HintPath>$(DALAMUD_HOME)\Lumina.dll</HintPath>
     </Reference>
   </ItemGroup>
 
   <ItemGroup>
     <Reference Include="Lumina.Excel">
-      <HintPath>C:\Users\czy29\AppData\Roaming\XIVLauncherCN\installedPlugins\ICE\0.0.0.636\Lumina.Excel.dll</HintPath>
+      <HintPath>$(DALAMUD_HOME)\Lumina.Excel.dll</HintPath>
     </Reference>
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.4" />
     <PackageReference Include="SQLitePCLRaw.core" Version="2.1.4" />
+    <PackageReference Include="DalamudPackager" Version="2.*" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>

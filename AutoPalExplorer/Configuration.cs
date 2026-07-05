@@ -47,6 +47,9 @@ namespace AutoPalExplorer
         // 埋藏宝藏触发半径
         public float BuriedChestDoneRadius { get; set; } = 1.0f;
 
+        // 埋藏宝藏等待时间
+        public float BlindWaitDuration { get; set; } = 3.0f;
+
         // 未激活门附近「算在门边」的范围
         public float InactiveExitNearRadius { get; set; } = 6.0f;
 

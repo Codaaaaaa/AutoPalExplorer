@@ -1,5 +1,9 @@
 using System;
 using System.Numerics;
+using System.Net.Http;
+using System.Text.Json;
+using System.Threading.Tasks;
+
 using Dalamud.Interface;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Plugin.Services;
@@ -26,7 +30,8 @@ namespace AutoPalExplorer
         private IDalamudTextureWrap? logoTexture;
         private bool logoLoadStarted = false;   
         private string? logoError;
-
+        private bool testingOnline = false;
+        private string onlineTestResult = string.Empty;
         public ConfigWindow(Configuration config, AutoPalController controller, PomanderManager pomanderManager, IPartyList partyList)
         {
             this.config = config;
@@ -153,6 +158,47 @@ namespace AutoPalExplorer
             ImGui.Unindent();
 
             ImGui.Separator();
+            ImGui.TextUnformatted("盲踩共享模式:");
+
+            string[] syncModeLabels = { "本地模式（只自己）", "联机模式（小队共享）" };
+            int syncModeIndex = (int)config.BlindSyncMode;
+            if (ImGui.Combo("盲踩同步模式", ref syncModeIndex, syncModeLabels, syncModeLabels.Length))
+            {
+                config.BlindSyncMode = (BlindSyncMode)syncModeIndex;
+                config.Save();
+            }
+
+            // 只有联机模式下才显示服务器配置
+            if (config.BlindSyncMode == BlindSyncMode.Online)
+            {
+                string serverUrl = config.OnlineServerUrl ?? string.Empty;
+                if (ImGui.InputText("服务器地址", ref serverUrl, 256))
+                {
+                    config.OnlineServerUrl = serverUrl;
+                    config.Save();
+                }
+
+                string apiKey = config.OnlineApiKey ?? string.Empty;
+                if (ImGui.InputText("API Key", ref apiKey, 64))
+                {
+                    config.OnlineApiKey = apiKey;
+                    config.Save();
+                }
+
+                ImGui.SameLine();
+                if (ImGui.SmallButton("测试联机"))
+                {
+                    _ = TestOnlineConnectivityAsync();
+                }
+
+                if (!string.IsNullOrEmpty(onlineTestResult))
+                {
+                    ImGui.SameLine();
+                    ImGui.TextUnformatted(onlineTestResult);
+                }
+            }
+
+            ImGui.Separator();
             ImGui.TextUnformatted("其他:");
             bool devModeStatus = config.devMode;
             if (ImGui.Checkbox("开发者(拉屎)模式", ref devModeStatus))
@@ -190,6 +236,14 @@ namespace AutoPalExplorer
                 if (ImGui.DragFloat("埋藏宝藏触发半径", ref buriedDone, 0.1f, 0.5f, 10.0f, "%.1f"))
                 {
                     config.BuriedChestDoneRadius = MathF.Max(0.1f, buriedDone);
+                    config.Save();
+                }
+
+                // BuriedChestDoneRadius
+                float blindWaitDuration = config.BlindWaitDuration;
+                if (ImGui.DragFloat("盲踩宝藏等待时间", ref blindWaitDuration, 2.0f, 0.5f, 10.0f, "%.1f"))
+                {
+                    config.BlindWaitDuration = MathF.Max(2.0f, blindWaitDuration);
                     config.Save();
                 }
 
@@ -519,6 +573,48 @@ namespace AutoPalExplorer
             return $"{v.X:F2}, {v.Y:F2}, {v.Z:F2}";
         }
         
+        private async Task TestOnlineConnectivityAsync()
+        {
+            if (testingOnline)
+                return;
+
+            testingOnline = true;
+            onlineTestResult = "测试中...";
+
+            try
+            {
+                var urlBase = string.IsNullOrWhiteSpace(config.OnlineServerUrl)
+                    ? "http://127.0.0.1:8080"
+                    : config.OnlineServerUrl.TrimEnd('/');
+
+                var apiKey = config.OnlineApiKey ?? string.Empty;
+
+                using var http = new HttpClient();
+                var url = $"{urlBase}/health?api_key={Uri.EscapeDataString(apiKey)}";
+
+                using var resp = await http.GetAsync(url).ConfigureAwait(false);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    onlineTestResult = $"失败：HTTP {(int)resp.StatusCode}";
+                    return;
+                }
+
+                var text = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                // 简单判断一下
+                onlineTestResult = text.Contains("ok", StringComparison.OrdinalIgnoreCase)
+                    ? "联机正常"
+                    : "响应异常";
+            }
+            catch (Exception ex)
+            {
+                onlineTestResult = $"异常：{ex.Message}";
+            }
+            finally
+            {
+                testingOnline = false;
+            }
+        }
+
         private void DrawFollowConfig()
         {
             ImGui.Separator();

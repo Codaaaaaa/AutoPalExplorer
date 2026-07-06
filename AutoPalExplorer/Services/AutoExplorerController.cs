@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using System.IO;
 using System.Text.Json.Serialization;
@@ -79,6 +80,8 @@ public sealed class AutoPalController
     private DateTime nextChallengeAttemptAt = DateTime.MinValue;
     // Boss 流程里弹出的确认窗口（DeepDungeonMenu / SelectYesno）点击节流
     private DateTime nextBossAddonFireAt = DateTime.MinValue;
+    // 玩家阵亡后点掉复活确认窗口（SelectYesno）的节流
+    private DateTime nextReviveAddonFireAt = DateTime.MinValue;
     private float EnemySearchRadius => MathF.Max(1.0f, config.EnemySearchRadius);
     // 车头支援：到进战队友多近算“到位”
     private float HelpPartyArriveRadius => MathF.Max(0.5f, config.HelpPartyArriveRadius);
@@ -460,6 +463,10 @@ public sealed class AutoPalController
                 log.Information("[AutoPalExplorer] Update：本地玩家为空，等待。");
             return;
         }
+
+        // 0. 最高优先级：先看自己有没有死。死了就只处理复活确认，不执行任何其它逻辑。
+        if (HandlePlayerDeath(player))
+            return;
 
         // 地宫入口地图（terr 816）：只有车头模式自动进本，不走下面的探索/停止逻辑
         if (clientState.TerritoryType == EntryTerritory)
@@ -1264,8 +1271,10 @@ public sealed class AutoPalController
 
     /// <summary>
     /// 点掉 Boss 排队流程里会弹出的确认窗口：
-    /// - DeepDungeonMenu -> Callback.Fire(a, true, 0)
-    /// - SelectYesno     -> Callback.Fire(a, true, 0)
+    /// - DeepDungeonResult -> Callback.Fire(a, true, -1)
+    ///     （30/50/70/90 层 Boss 结束、与退出点交互后会弹结算界面，点掉后回到入口地图 816 重新进本）
+    /// - DeepDungeonMenu   -> Callback.Fire(a, true, 0)
+    /// - SelectYesno       -> Callback.Fire(a, true, 0)
     /// 带节流，避免每帧对同一个窗口狂点。返回是否点了其中一个。
     /// </summary>
     private unsafe bool TryConfirmBossQueueAddons()
@@ -1273,6 +1282,16 @@ public sealed class AutoPalController
         var now = DateTime.UtcNow;
         if (now < nextBossAddonFireAt)
             return false;
+
+        if (TryGetAddonByName<AtkUnitBase>("DeepDungeonResult", out var result) && IsAddonReady(result))
+        {
+            Callback.Fire(result, true, -1);
+            nextBossAddonFireAt = now.AddSeconds(1.0);
+
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] [Boss层] [Queue] 点击 DeepDungeonResult -> -1（阶段结算，返回入口重进）。");
+            return true;
+        }
 
         if (TryGetAddonByName<AtkUnitBase>("DeepDungeonMenu", out var menu) && IsAddonReady(menu))
         {
@@ -1295,6 +1314,39 @@ public sealed class AutoPalController
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// 玩家阵亡处理（最高优先级）：
+    /// - 若玩家还活着，返回 false，交回上层执行原本的探索逻辑。
+    /// - 若玩家已死亡：停止导航，检测屏幕上的 SelectYesno（复活确认窗口），
+    ///   有就点 0（“是”/o [int]: 0），点完带 1 秒节流；随后等待游戏自动复活。
+    /// </summary>
+    private unsafe bool HandlePlayerDeath(IPlayerCharacter player)
+    {
+        if (!(player.IsDead || player.CurrentHp == 0))
+            return false;
+
+        SetIntent("玩家已阵亡：停止移动，等待复活");
+
+        // 死了就别再跑图
+        if (navigator.IsBusy)
+            navigator.Stop();
+
+        var now = DateTime.UtcNow;
+        if (now < nextReviveAddonFireAt)
+            return true;
+
+        if (TryGetAddonByName<AtkUnitBase>("SelectYesno", out var yn) && IsAddonReady(yn))
+        {
+            Callback.Fire(yn, true, 0);
+            nextReviveAddonFireAt = now.AddSeconds(1.0);
+
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] [死亡] 检测到 SelectYesno，点击 0 确认复活。");
+        }
+
+        return true;
     }
 
     private unsafe void TryInteractWithObject(IGameObject obj, string purpose)
@@ -1658,9 +1710,9 @@ public sealed class AutoPalController
 
     /// <summary>
     /// 车头模式支援：如果有队友进入战斗状态，停止当前探索，前去支援。
-    /// - 离进战队友较远：导航到队友身边；
-    /// - 到队友身边后：找最近的怪开打（复用 EngageEnemy）；
-    /// - 队友在战斗但附近没有可打的怪：待在队友身边，不跑去开箱/贴墙。
+    /// - 优先直接前往“队友正在交战的一只怪”的位置开打（复用 EngageEnemy，而不是走到队友脚下）；
+    /// - 若一时看不到队友在打的怪（可能还没进视野）：先靠近队友把怪带进视野；
+    /// - 到队友身边仍找不到可打的怪：待命在旁，不跑去开箱/贴墙。
     /// 返回 true 表示本帧由支援逻辑接管。
     /// </summary>
     private bool TryHelpPartyInCombat(Vector3 pos, IPlayerCharacter? player, Vector3? currentTarget)
@@ -1672,11 +1724,25 @@ public sealed class AutoPalController
         if (mate is null)
             return false;
 
+        // 优先：直接去打队友正在交战的怪（去怪的位置，而不是队友的位置）
+        var enemy = FindEnemyFightingMember(mate);
+        if (enemy is not null)
+        {
+            SetIntent("车头：支援队友，前往其交战的怪");
+
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] [支援] 前往队友 {Mate} 交战的怪 {Enemy}。",
+                    mate.Name.TextValue, enemy.Name.TextValue);
+
+            EngageEnemy(enemy, pos, player, currentTarget);
+            return true;
+        }
+
+        // 看不到队友在打的怪（可能还没进视野/加载）：先靠近队友把怪带进视野
         var dx = mate.Position.X - pos.X;
         var dz = mate.Position.Z - pos.Z;
         var dist = MathF.Sqrt(dx * dx + dz * dz);
 
-        // 距离较远：先跑到队友身边
         if (dist > HelpPartyArriveRadius)
         {
             SetIntent($"车头：队友进战，前去支援（{dist:0.0}m）");
@@ -1688,27 +1754,70 @@ public sealed class AutoPalController
             }
 
             if (config.devMode)
-                log.Information("[AutoPalExplorer] [支援] 队友 {Name} 进战，前往支援，距离={Dist:0.00}。",
+                log.Information("[AutoPalExplorer] [支援] 队友 {Name} 进战，暂未见到其目标怪，先靠近队友，距离={Dist:0.00}。",
                     mate.Name.TextValue, dist);
 
             return true;
         }
 
-        // 已到队友身边：找最近的怪开打
-        var enemy = FindNearestEnemy(pos, EnemySearchRadius);
-        if (enemy is not null)
-        {
-            SetIntent("车头：在队友身边帮忙打怪");
-            EngageEnemy(enemy, pos, player, currentTarget);
-            return true;
-        }
-
-        // 队友在战斗但附近找不到可打的怪：待命在旁，别跑去开箱
+        // 已到队友身边但仍找不到可打的怪：待命在旁，别跑去开箱
         SetIntent("车头：队友进战，待命在旁");
         if (navigator.IsBusy)
             navigator.Stop();
 
         return true;
+    }
+
+    /// <summary>
+    /// 找一只“队友正在交战的怪”：
+    /// - 优先：正在把队友当目标的怪（谁在打这个队友），取离队友最近的一只；
+    /// - 兜底：队友当前锁定的目标怪。
+    /// </summary>
+    private IBattleChara? FindEnemyFightingMember(IBattleChara mate)
+    {
+        var mateId = mate.GameObjectId;
+        var mateTargetId = mate.TargetObjectId;
+
+        IBattleChara? attackingMate = null;
+        var bestDistSq = float.MaxValue;
+        IBattleChara? mateTarget = null;
+
+        foreach (var obj in objectTable)
+        {
+            if (obj is not IBattleChara bc)
+                continue;
+
+            if (bc.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.BattleNpc)
+                continue;
+
+            if (bc is not IBattleNpc bn)
+                continue;
+
+            if (bn.BattleNpcKind != Dalamud.Game.ClientState.Objects.Enums.BattleNpcSubKind.Combatant)
+                continue;
+
+            if (!bc.IsTargetable || bc.CurrentHp <= 0)
+                continue;
+
+            // 队友锁定的目标怪（兜底用）
+            if (mateTargetId != 0 && bc.GameObjectId == mateTargetId)
+                mateTarget = bc;
+
+            // 正在打这个队友的怪：取离队友最近的一只
+            if (bc.TargetObjectId == mateId)
+            {
+                var dx = bc.Position.X - mate.Position.X;
+                var dz = bc.Position.Z - mate.Position.Z;
+                var distSq = dx * dx + dz * dz;
+                if (distSq < bestDistSq)
+                {
+                    bestDistSq = distSq;
+                    attackingMate = bc;
+                }
+            }
+        }
+
+        return attackingMate ?? mateTarget;
     }
 
     /// <summary>
@@ -2500,9 +2609,12 @@ public sealed class AutoPalController
             var ok = false;
             try
             {
+                // 给预定请求一个较短的超时，避免服务器不可达时把 reserveInFlight 卡住到 HttpClient 默认 100s，
+                // 那会让整层盲踩长时间不再预定新点。
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
                 var json = JsonSerializer.Serialize(payload);
                 using var content = new StringContent(json, Encoding.UTF8, "application/json");
-                using var resp = await httpClient.PostAsync(url, content).ConfigureAwait(false);
+                using var resp = await httpClient.PostAsync(url, content, cts.Token).ConfigureAwait(false);
 
                 if (!resp.IsSuccessStatusCode)
                 {
@@ -2511,7 +2623,7 @@ public sealed class AutoPalController
                 }
                 else
                 {
-                    var text = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    var text = await resp.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
                     var dto = JsonSerializer.Deserialize<OnlineIgnoredReserveResponse>(text);
                     if (dto is null)
                     {
@@ -2593,12 +2705,13 @@ public sealed class AutoPalController
             if (IsOnlineMode)
             {
                 // 联机模式：预定要走网络，绝不能在主线程上同步等待（高延迟会卡帧）。
-                // 改为非阻塞状态机：本帧最多发起一个后台预定请求，然后立刻返回，
-                // 结果由后续帧轮询处理。
+                // 改为非阻塞状态机：本帧最多发起一个后台预定请求，由后续帧轮询结果。
+                // 关键：只有真正“抢到点”（TryPickBlindTargetOnline 返回 true）才继续往下导航；
+                // 否则（请求在路上 / 已没有更多点）返回 false，把本帧交回给探索逻辑，
+                // 让角色继续贴墙探索而不是站桩不动——预定完成后下一帧再切到盲踩目标。
                 if (!TryPickBlindTargetOnline(playerPos))
                 {
-                    // 还没抢到目标（请求在路上 / 没更多点）：盲踩逻辑占用本帧但不阻塞。
-                    return true;
+                    return false;
                 }
             }
             else

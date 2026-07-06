@@ -108,11 +108,22 @@ public sealed class PomanderManager
             return;
         }
 
-        // 杜松香：获得时计数 +1，满 3 个后在 UsingPomander 里使用
+        // 杜松香是全队共享池：任何人获得都 +1，任何人点燃（使用）都 -1。
+
+        // 获得：计数 +1（这条消息对全队可见，队友获得也会收到）
         if (text.Contains("获得了杜松香", StringComparison.Ordinal))
         {
             juniperCount++;
-            log.Information($"[AutoPalExplorer][Juniper] 杜松香 -> {juniperCount}");
+            log.Information($"[AutoPalExplorer][Juniper] 获得杜松香 -> {juniperCount}");
+            return;
+        }
+
+        // 点燃/使用：计数 -1（自己或队友点燃都会收到，例如“xxx点燃杜松香·敏慧召唤了妖灵王的分身！”）
+        // 各种变体都含“点燃杜松香”，用子串匹配即可覆盖。
+        if (text.Contains("点燃杜松香", StringComparison.Ordinal))
+        {
+            juniperCount = Math.Max(0, juniperCount - 1);
+            log.Information($"[AutoPalExplorer][Juniper] 点燃杜松香 -> {juniperCount}");
             return;
         }
 
@@ -177,12 +188,13 @@ public sealed class PomanderManager
     /// </summary>
     private void RunPomanderDecisions(IPlayerCharacter player)
     {
-        // ---- 0. 杜松香：满 3 个用一次（DeepDungeonStatus callback 12, 0），用后 -1 ----
+        // ---- 0. 杜松香：满 3 个用一次（DeepDungeonStatus callback 12, 0）----
+        // 注意：不在这里立即 -1。杜松香是全队共享池，使用后游戏会广播“点燃杜松香”消息，
+        // 由 CalculateOnChat 统一 -1（自己/队友一视同仁），避免和消息重复扣减。
         if (juniperCount >= JuniperUseThreshold)
         {
             chatGui.Print($"[AutoPalExplorer] 杜松香数量达到 {juniperCount}，自动使用杜松香。");
             UseJuniper();
-            juniperCount -= 1;
         }
 
         // ---- 1. debuff 检测 ----

@@ -35,6 +35,12 @@ public sealed partial class AutoPalController
 {
     private bool ShouldOpenChest(uint baseId)
     {
+        // 埋藏的宝藏永远开：必须先于金箱判断，
+        // 因为挖出来的埋藏宝箱 BaseId=2007543 同时也在 GoldChestIds 里，
+        // 若先判金箱，关闭金箱时会误把埋藏宝箱一起跳过（只会踩不会开）。
+        if (ObjectIds.IsBuriedChest(baseId))
+            return true;
+
         if (ObjectIds.IsBronzeChest(baseId))
             return config.OpenBronzeChests;
 
@@ -43,9 +49,6 @@ public sealed partial class AutoPalController
 
         if (ObjectIds.IsGoldChest(baseId))
             return config.OpenGoldChests;
-        
-        if (ObjectIds.IsBuriedChest(baseId))
-            return true;
 
         return false;
     }

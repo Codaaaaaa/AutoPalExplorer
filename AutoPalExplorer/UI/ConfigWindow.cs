@@ -104,7 +104,22 @@ namespace AutoPalExplorer
                 config.Save();
             }
 
+            // 魔陶器使用范围：只有勾选“使用魔陶器”时才可选，否则禁用
+            ImGui.Indent();
+            ImGui.BeginDisabled(!config.UsingPomander);
+            string[] pomanderModeLabels = { "仅使用强化自身和防御魔陶器", "使用全部魔陶器和杜松香" };
+            int pomanderModeIndex = (int)config.PomanderMode;
+            if (ImGui.Combo("魔陶器使用范围", ref pomanderModeIndex, pomanderModeLabels, pomanderModeLabels.Length))
+            {
+                config.PomanderMode = (PomanderUsageMode)pomanderModeIndex;
+                config.Save();
+            }
+            ImGui.EndDisabled();
+            ImGui.Unindent();
+
             DrawFollowConfig();
+
+            DrawRoundConfig();
 
             ImGui.Separator();
             ImGui.TextUnformatted("战斗设置:");
@@ -236,6 +251,14 @@ namespace AutoPalExplorer
                 if (ImGui.DragFloat("埋藏宝藏触发半径", ref buriedDone, 0.1f, 0.5f, 10.0f, "%.1f"))
                 {
                     config.BuriedChestDoneRadius = MathF.Max(0.1f, buriedDone);
+                    config.Save();
+                }
+
+                // RadiantCandlestandNearRange
+                float radiantNear = config.RadiantCandlestandNearRange;
+                if (ImGui.DragFloat("光耀烛台优先距离", ref radiantNear, 1.0f, 0.0f, 200.0f, "%.0f"))
+                {
+                    config.RadiantCandlestandNearRange = MathF.Max(0.0f, radiantNear);
                     config.Save();
                 }
 
@@ -673,6 +696,90 @@ namespace AutoPalExplorer
             {
                 testingOnline = false;
             }
+        }
+
+        private void DrawRoundConfig()
+        {
+            ImGui.Separator();
+            ImGui.TextUnformatted("存档 / 轮次设置:");
+
+            // 使用几号存档（始终生效）
+            string[] slotLabels = { "1号存档", "2号存档" };
+            int slotIndex = config.SaveSlot == 1 ? 1 : 0;
+            if (ImGui.Combo("使用存档", ref slotIndex, slotLabels, slotLabels.Length))
+            {
+                config.SaveSlot = slotIndex;
+                config.Save();
+            }
+
+            bool enableRound = config.EnableRoundLimit;
+            if (ImGui.Checkbox("启用「打到指定层停止 / 多轮」", ref enableRound))
+            {
+                config.EnableRoundLimit = enableRound;
+                config.Save();
+            }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("关闭时保持原来的“无限连续刷本”行为。\n开启后：从起始层进本，打到停止层出本删档，等待若干秒重新排本，重复设定轮数后自动停止。");
+
+            ImGui.Indent();
+            ImGui.BeginDisabled(!config.EnableRoundLimit);
+
+            // 起始层：1 / 21 / 31 / 51 / 71
+            int[] startFloors = { 1, 21, 31, 51, 71 };
+            string[] startFloorLabels = { "第1层", "第21层", "第31层", "第51层", "第71层" };
+            int startIdx = Array.IndexOf(startFloors, config.StartFloor);
+            if (startIdx < 0) startIdx = 0;
+            if (ImGui.Combo("起始层", ref startIdx, startFloorLabels, startFloorLabels.Length))
+            {
+                config.StartFloor = startFloors[startIdx];
+                config.Save();
+            }
+
+            // 停止层：30 / 50 / 70 / 100，只保留比起始层高的选项
+            int[] allStopFloors = { 30, 50, 70, 100 };
+            var stopFloorList = new List<int>();
+            var stopFloorLabelList = new List<string>();
+            foreach (var f in allStopFloors)
+            {
+                if (f <= config.StartFloor)
+                    continue;
+                stopFloorList.Add(f);
+                stopFloorLabelList.Add($"第{f}层");
+            }
+
+            var stopFloors = stopFloorList.ToArray();
+            var stopFloorLabels = stopFloorLabelList.ToArray();
+
+            // 当前停止层若不在可选范围（低于/等于起始层）则自动纠正为最低的合法层
+            int stopIdx = Array.IndexOf(stopFloors, config.StopFloor);
+            if (stopIdx < 0)
+            {
+                stopIdx = 0;
+                config.StopFloor = stopFloors[0];
+                config.Save();
+            }
+            if (ImGui.Combo("停止层", ref stopIdx, stopFloorLabels, stopFloorLabels.Length))
+            {
+                config.StopFloor = stopFloors[stopIdx];
+                config.Save();
+            }
+
+            int roundCount = config.RoundCount;
+            if (ImGui.DragInt("轮数", ref roundCount, 1, 1, 999))
+            {
+                config.RoundCount = Math.Max(1, roundCount);
+                config.Save();
+            }
+
+            int roundWait = config.RoundWaitSeconds;
+            if (ImGui.DragInt("每轮等待 (s)", ref roundWait, 1, 0, 120))
+            {
+                config.RoundWaitSeconds = Math.Max(0, roundWait);
+                config.Save();
+            }
+
+            ImGui.EndDisabled();
+            ImGui.Unindent();
         }
 
         private void DrawFollowConfig()

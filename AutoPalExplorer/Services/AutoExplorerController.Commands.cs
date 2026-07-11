@@ -188,31 +188,4 @@ public sealed partial class AutoPalController
             log.Warning($"[AutoPalExplorer] 发送聊天命令失败 '{text}': {ex.Message}");
         }
     }
-
-    private void BreakActWithShift()
-    {
-        try
-        {
-            // 按下 Shift
-            keyState[VirtualKey.SHIFT] = true;
-
-            // 1 帧后抬起（可以根据需要改成 delayTicks: 2 或 TimeSpan）
-            _ = framework.RunOnTick(
-                () =>
-                {
-                    keyState[VirtualKey.SHIFT] = false;
-                    if (config.devMode)
-                        log.Information("[AutoPalExplorer] 已抬起 Shift，用于打断 ACT/E。");
-                },
-                delayTicks: 1
-            );
-
-            if (config.devMode)
-                log.Information("[AutoPalExplorer] 按下 Shift 用于打断 ACT/E。");
-        }
-        catch (Exception ex)
-        {
-            log.Warning($"[AutoPalExplorer] BreakActWithShift 异常：{ex}");
-        }
-    }
 }

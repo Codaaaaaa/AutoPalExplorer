@@ -73,7 +73,12 @@ public sealed partial class AutoPalController
             return true; // Boss 还活着，只做打 Boss 的逻辑
         }
 
-        // 2) 没有敌人 -> 认为 Boss 已击破，前往出口 BaseId=2005809
+        // 2) 没有敌人 -> 认为 Boss 已击破
+        // 99 层特殊收尾：不走普通出口，改为交互 2014940 → 等 5 秒 → 走进传送装置传送到 100 层
+        if (currentFloor == 99)
+            return HandleFloor99Exit(pos);
+
+        // 普通 Boss 层：前往出口 BaseId=2005809
         var exitObj = FindObjectByBaseId(ObjectIds.BossExitBaseId);
         if (exitObj is not null)
         {
@@ -270,6 +275,222 @@ public sealed partial class AutoPalController
     }
 
     /// <summary>
+    /// 99 层 Boss 已清后的收尾：
+    /// 1) 找 2014940 走过去交互；
+    /// 2) 交互后等 5 秒；
+    /// 3) 走进传送装置（exitIds，如 2014756），进入后游戏自动把人传送到 100 层。
+    /// </summary>
+    private bool HandleFloor99Exit(Vector3 pos)
+    {
+        EnsureBmraiOff();
+        EnsureRotationOff();
+
+        // 阶段 1：前往并交互 2014940
+        if (!floor99AltarInteracted)
+        {
+            var altar = FindObjectByBaseId(ObjectIds.Floor99AltarBaseId);
+            if (altar is null)
+            {
+                SetIntent("99层：Boss 已清，等待 2014940 出现");
+                return true;
+            }
+
+            var adx = altar.Position.X - pos.X;
+            var adz = altar.Position.Z - pos.Z;
+            var adistSq = adx * adx + adz * adz;
+
+            if (adistSq > ExitStopRadius * ExitStopRadius)
+            {
+                SetIntent("99层：前往 2014940");
+                if (!navigator.IsBusy || IsDifferentTarget(navigator.CurrentTarget, altar.Position, 1.0f))
+                {
+                    navigator.Stop();
+                    navigator.TryMoveTo(altar.Position);
+                }
+                return true;
+            }
+
+            if (navigator.IsBusy)
+                navigator.Stop();
+
+            if (altar.IsTargetable)
+            {
+                TryInteractWithObject(altar, "99层物件(2014940)");
+                floor99AltarInteracted = true;
+                floor99AltarInteractedAt = DateTime.UtcNow;
+                SetIntent("99层：已交互 2014940，等待 5 秒");
+
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] [99层] 已交互 2014940，等待 {Sec}s 后走进传送装置。", Floor99WaitSeconds);
+            }
+            return true;
+        }
+
+        // 阶段 2：等待 5 秒
+        if ((DateTime.UtcNow - floor99AltarInteractedAt).TotalSeconds < Floor99WaitSeconds)
+        {
+            SetIntent("99层：交互后等待中");
+            if (navigator.IsBusy)
+                navigator.Stop();
+            return true;
+        }
+
+        // 阶段 3：走进传送装置（进入后自动传送到 100 层，之后由换层逻辑接管）
+        var teleport = FindObjectByBaseIds(ObjectIds.exitIds);
+        if (teleport is null)
+        {
+            SetIntent("99层：等待传送装置出现");
+            return true;
+        }
+
+        var tdx = teleport.Position.X - pos.X;
+        var tdz = teleport.Position.Z - pos.Z;
+        var tdistSq = tdx * tdx + tdz * tdz;
+        if (tdistSq > ExitStopRadius * ExitStopRadius)
+        {
+            SetIntent("99层：走进传送装置");
+            if (!navigator.IsBusy || IsDifferentTarget(navigator.CurrentTarget, teleport.Position, 1.0f))
+            {
+                navigator.Stop();
+                navigator.TryMoveTo(teleport.Position);
+            }
+            return true;
+        }
+
+        SetIntent("99层：已进入传送装置，等待传送至 100 层");
+        return true;
+    }
+
+    /// <summary>
+    /// 100 层收尾流程（从 99 层传送过来后，isBossFloor 已在 NotifyFloorNumber 里清掉）：
+    /// 1) 移动到固定坐标 Floor100StartPoint；
+    /// 2) 移动到 2014754 并交互；
+    /// 3) 交互后等 3 秒，退出点 2005809 出现；
+    /// 4) 走到退出点交互，随后 SelectYesno→0、DeepDungeonResult→退出（与 30/50 层一致，交给 TryConfirmBossQueueAddons）。
+    /// </summary>
+    private bool HandleFloor100(Vector3 pos)
+    {
+        // 每帧尝试点掉可能弹出的确认窗口（SelectYesno→0 / DeepDungeonResult→退出 / DeepDungeonMenu→0）
+        TryConfirmBossQueueAddons();
+
+        switch (floor100Stage)
+        {
+            case Floor100Stage.MovingToCoord:
+            {
+                var dx = Floor100StartPoint.X - pos.X;
+                var dz = Floor100StartPoint.Z - pos.Z;
+                if (dx * dx + dz * dz > Floor100ReachRadius * Floor100ReachRadius)
+                {
+                    SetIntent("100层：移动到起始坐标");
+                    if (!navigator.IsBusy || IsDifferentTarget(navigator.CurrentTarget, Floor100StartPoint, 1.0f))
+                    {
+                        navigator.Stop();
+                        navigator.TryMoveTo(Floor100StartPoint);
+                    }
+                    return true;
+                }
+
+                if (navigator.IsBusy)
+                    navigator.Stop();
+                floor100Stage = Floor100Stage.MovingToInteract;
+                return true;
+            }
+
+            case Floor100Stage.MovingToInteract:
+            {
+                var obj = FindObjectByBaseId(ObjectIds.Floor100InteractBaseId);
+                if (obj is null)
+                {
+                    SetIntent("100层：等待 2014754 出现");
+                    return true;
+                }
+
+                var dx = obj.Position.X - pos.X;
+                var dz = obj.Position.Z - pos.Z;
+                if (dx * dx + dz * dz > ExitStopRadius * ExitStopRadius)
+                {
+                    SetIntent("100层：前往 2014754");
+                    if (!navigator.IsBusy || IsDifferentTarget(navigator.CurrentTarget, obj.Position, 1.0f))
+                    {
+                        navigator.Stop();
+                        navigator.TryMoveTo(obj.Position);
+                    }
+                    return true;
+                }
+
+                if (navigator.IsBusy)
+                    navigator.Stop();
+
+                if (obj.IsTargetable)
+                {
+                    TryInteractWithObject(obj, "100层物件(2014754)");
+                    floor100InteractedAt = DateTime.UtcNow;
+                    floor100Stage = Floor100Stage.WaitingAfterInteract;
+                    SetIntent("100层：已交互 2014754，等待 3 秒");
+                }
+                return true;
+            }
+
+            case Floor100Stage.WaitingAfterInteract:
+            {
+                if ((DateTime.UtcNow - floor100InteractedAt).TotalSeconds < Floor100WaitSeconds)
+                {
+                    SetIntent("100层：交互后等待退出点出现");
+                    if (navigator.IsBusy)
+                        navigator.Stop();
+                    return true;
+                }
+
+                floor100Stage = Floor100Stage.GoingToExit;
+                return true;
+            }
+
+            case Floor100Stage.GoingToExit:
+            {
+                EnsureBmraiOff();
+                EnsureRotationOff();
+
+                var exitObj = FindObjectByBaseId(ObjectIds.BossExitBaseId); // 2005809
+                if (exitObj is null)
+                {
+                    SetIntent("100层：等待退出点(2005809)出现");
+                    return true;
+                }
+
+                var dx = exitObj.Position.X - pos.X;
+                var dz = exitObj.Position.Z - pos.Z;
+                if (dx * dx + dz * dz > ExitStopRadius * ExitStopRadius)
+                {
+                    SetIntent("100层：前往退出点");
+                    if (!navigator.IsBusy || IsDifferentTarget(navigator.CurrentTarget, exitObj.Position, 1.0f))
+                    {
+                        navigator.Stop();
+                        navigator.TryMoveTo(exitObj.Position);
+                    }
+                    return true;
+                }
+
+                if (navigator.IsBusy)
+                    navigator.Stop();
+
+                if (exitObj.IsTargetable)
+                {
+                    TryInteractWithObject(exitObj, "100层退出点(2005809)");
+                    floor100Stage = Floor100Stage.Done;
+                    SetIntent("100层：已交互退出点，点确认窗口退出");
+                }
+                return true;
+            }
+
+            case Floor100Stage.Done:
+            default:
+                // 交互后弹出的 SelectYesno / DeepDungeonResult 由顶部 TryConfirmBossQueueAddons 逐个点掉
+                SetIntent("100层：等待并点击退出确认窗口");
+                return true;
+        }
+    }
+
+    /// <summary>
     /// 在入口地图（terr 816）自动进本：
     /// 1. 靠近入口坐标（不足 5 格用 /vnav flyto 接近）；
     /// 2. 交互入口物件 (BaseId=1054942)；
@@ -283,6 +504,21 @@ public sealed partial class AutoPalController
     {
         if (IsFollowMode)
             return; // 只有车头模式自动进本
+
+        // 轮次控制：回到入口时先判断是否“一轮打完”（打满轮数会直接 Stop）
+        if (config.EnableRoundLimit)
+        {
+            HandleRoundTransitionAtEntrance();
+            if (!IsRunning)
+                return; // 打满轮数，已 Stop
+
+            if (DateTime.UtcNow < roundWaitUntil)
+            {
+                var remain = (roundWaitUntil - DateTime.UtcNow).TotalSeconds;
+                SetIntent($"轮次：删档后等待 {remain:0.0}s 再重新排本");
+                return; // 等待期间不进本
+            }
+        }
 
         if (entrySubmitted)
         {
@@ -331,40 +567,222 @@ public sealed partial class AutoPalController
 
     private unsafe void EnqueueEntrySequence(ulong entryObjectId)
     {
+        var slot = SaveSlotIndex;
+        // 是否“重开一轮”：需要保证存档槽为空，才能在最后的 SelectString 选起始层
+        var fresh = config.EnableRoundLimit && startFreshRound;
+        // 最后一个 SelectString 的选项索引：重开一轮 -> 起始层索引；否则 0（第一层 / 续打旧存档）
+        entryStartFloorIndex = fresh ? StartFloorSelectIndex : 0;
+
+        if (config.devMode)
+            log.Information("[AutoPalExplorer] [入口] 进本序列：存档槽={Slot}，重开一轮={Fresh}，起始层索引={Idx}。",
+                slot, fresh, entryStartFloorIndex);
+
         // 1. 交互入口物件
         entryTaskManager.Enqueue(() => InteractEntryObject(entryObjectId));
 
         // 2. DeepDungeonMenu -> callback(0)
-        entryTaskManager.Enqueue(() =>
-            TryGetAddonByName<AtkUnitBase>("DeepDungeonMenu", out var a) && IsAddonReady(a));
+        EnqueueWaitAddon("DeepDungeonMenu");
+        EnqueueFireAddon("DeepDungeonMenu", 0);
+
+        // 3. DeepDungeonSaveData 就绪
+        EnqueueWaitAddon("DeepDungeonSaveData");
+
+        // 3b. 重开一轮：先检查目标存档槽有没有存档，有则删档（删完重新回到 DeepDungeonSaveData 起始模式）
+        if (fresh)
+        {
+            saveSlotHasData = false;
+            entryTaskManager.Enqueue(() =>
+            {
+                if (TryGetAddonByName<AtkUnitBase>("DeepDungeonSaveData", out var sd) && IsAddonReady(sd))
+                {
+                    saveSlotHasData = !IsSaveSlotEmpty(sd, slot);
+                    if (config.devMode)
+                        log.Information("[AutoPalExplorer] [入口] 存档槽 {Slot} {State}。",
+                            slot, saveSlotHasData ? "有存档，准备删除" : "为空（从头开始）");
+                }
+                return true;
+            });
+            EnqueueDeleteSaveIfNeeded(slot);
+        }
+
+        // 4. DeepDungeonSaveData -> callback(slot, second)：second = 有存档?1(继续):0(从头开始)
+        //    有存档 -> 1号(0,1)/2号(1,1)；空存档 -> 1号(0,0)/2号(1,0)。实时读一次，续打/重开/首次进本都对。
         entryTaskManager.Enqueue(() =>
         {
-            if (TryGetAddonByName<AtkUnitBase>("DeepDungeonMenu", out var a))
-                Callback.Fire(a, true, 0);
+            if (TryGetAddonByName<AtkUnitBase>("DeepDungeonSaveData", out var sd) && IsAddonReady(sd))
+            {
+                var empty = IsSaveSlotEmpty(sd, slot);
+                var second = empty ? 0 : 1;
+                log.Information("[AutoPalExplorer] [入口] step4：选存档槽 DeepDungeonSaveData -> callback({Slot}, {Second})（{Name}，{State}）。",
+                    slot, second, slot == 1 ? "2号存档" : "1号存档", empty ? "空/从头开始" : "有存档续打");
+                Callback.Fire(sd, true, slot, second);
+                return true;
+            }
+            return false;
         });
 
-        // 3. DeepDungeonSaveData -> callback(0, 0)
-        entryTaskManager.Enqueue(() =>
-            TryGetAddonByName<AtkUnitBase>("DeepDungeonSaveData", out var a) && IsAddonReady(a));
-        entryTaskManager.Enqueue(() =>
-        {
-            if (TryGetAddonByName<AtkUnitBase>("DeepDungeonSaveData", out var a))
-                Callback.Fire(a, true, 0, 0);
-        });
+        // 5. SelectString -> 选 0（进本设置菜单）
+        EnqueueWaitAddon("SelectString");
+        EnqueueFireAddon("SelectString", 0);
 
-        // 4. SelectString -> 选 0
-        entryTaskManager.Enqueue(() =>
-            TryGetAddonByName<AtkUnitBase>("SelectString", out var a) && IsAddonReady(a));
-        entryTaskManager.Enqueue(() =>
-        {
-            if (TryGetAddonByName<AtkUnitBase>("SelectString", out var a))
-                Callback.Fire(a, true, 0);
-        });
-
-        // 5. 不断 SelectYesno 选 0，直到再次出现 SelectString 选 0
+        // 6. 不断 SelectYesno 选 0，直到再次出现 SelectString 选“起始层索引”
         nextEntryConfirmFireAt = DateTime.MinValue;
         entryTaskManager.Enqueue(HandleEntryConfirmLoop);
     }
+
+    /// <summary>入队一个“等待指定 Addon 就绪”的任务。</summary>
+    private unsafe void EnqueueWaitAddon(string addonName)
+        => entryTaskManager.Enqueue(() =>
+            TryGetAddonByName<AtkUnitBase>(addonName, out var a) && IsAddonReady(a));
+
+    /// <summary>入队一个“对指定 Addon 触发 Callback.Fire(true, values)”的任务。</summary>
+    private unsafe void EnqueueFireAddon(string addonName, params object[] values)
+        => entryTaskManager.Enqueue(() =>
+        {
+            if (TryGetAddonByName<AtkUnitBase>(addonName, out var a))
+                Callback.Fire(a, true, values);
+        });
+
+    /// <summary>
+    /// 重开一轮：若目标存档槽有存档，则删除它（删完存档槽变空，之后进本才能选起始层）。
+    /// 通过 <see cref="saveSlotHasData"/> 控制——为 false 时下面每个任务都会直接跳过。
+    /// 删档流程（据实测）：
+    ///   DeepDungeonSaveData callback(-1) 回 DeepDungeonMenu
+    ///   -> DeepDungeonMenu callback(2) 进入删档模式的 DeepDungeonSaveData
+    ///   -> callback(slot, 0) 弹出 SelectYesno
+    ///   -> 勾选 SelectYesno 里的确认复选框(CheckBox 4 / Collision 5) 再 callback(0) 删除
+    ///   -> callback(-1) 回 DeepDungeonMenu -> callback(0) 重新打开起始模式的 DeepDungeonSaveData
+    /// </summary>
+    // 调试用：删档流程每一步之间的观察延迟（毫秒）。定位好问题后可改回 0 关闭。
+    private int deleteStepDebugDelayMs = 1000;
+
+    private void EnqueueDeleteSaveIfNeeded(int slot)
+    {
+        // a. 回到 DeepDungeonMenu
+        EnqueueDeleteDebugLog("a. DeepDungeonSaveData -> callback(-1) 回菜单");
+        EnqueueFireIfHasData("DeepDungeonSaveData", -1);
+        EnqueueDeleteStepDelay();
+        EnqueueWaitIfHasData("DeepDungeonMenu");
+        EnqueueDeleteStepDelay();
+        // b. 进入删档模式的 DeepDungeonSaveData
+        EnqueueDeleteDebugLog("b. DeepDungeonMenu -> callback(2) 进删档模式");
+        EnqueueFireIfHasData("DeepDungeonMenu", 2);
+        EnqueueDeleteStepDelay();
+        EnqueueWaitIfHasData("DeepDungeonSaveData");
+        EnqueueDeleteStepDelay();
+        // c. 选择要删的存档槽 -> 弹出 SelectYesno
+        //    删档回调值与进本不同：第二个参数固定为 1 -> 1号存档(0,1)，2号存档(1,1)
+        var deleteSecond = 1;
+        EnqueueDeleteDebugLog($"c. DeepDungeonSaveData -> callback({slot}, {deleteSecond}) 选存档槽");
+        EnqueueFireIfHasData("DeepDungeonSaveData", slot, deleteSecond);
+        EnqueueDeleteStepDelay();
+        EnqueueWaitIfHasData("SelectYesno");
+        EnqueueDeleteStepDelay();
+        // d. 勾选确认复选框
+        EnqueueDeleteDebugLog("d. SelectYesno -> 勾选确认复选框(CheckBox 4 / Collision 5)");
+        EnqueueClickDeleteCheckbox();
+        EnqueueDeleteStepDelay();
+        // e. callback(0) 确认删除
+        EnqueueDeleteDebugLog("e. SelectYesno -> callback(0) 确认删除");
+        EnqueueFireIfHasData("SelectYesno", 0);
+        EnqueueDeleteStepDelay();
+        // f. 删完确保回到 DeepDungeonMenu（删完可能停在 savedata 需 -1，也可能已直接回 menu）
+        EnqueueDeleteDebugLog("f. 确保回到 DeepDungeonMenu（若还在 savedata 则 -1）");
+        EnqueueEnsureBackToMenuAfterDelete();
+        EnqueueDeleteStepDelay();
+        // g. 重新打开起始模式的 DeepDungeonSaveData
+        EnqueueDeleteDebugLog("g. DeepDungeonMenu -> callback(0) 重开起始模式 SaveData");
+        EnqueueFireIfHasData("DeepDungeonMenu", 0);
+        EnqueueDeleteStepDelay();
+        EnqueueWaitIfHasData("DeepDungeonSaveData");
+    }
+
+    /// <summary>删档流程步骤间的观察延迟（仅在有存档、真正走删档分支时才延迟）。</summary>
+    private void EnqueueDeleteStepDelay()
+    {
+        if (deleteStepDebugDelayMs <= 0)
+            return;
+        entryTaskManager.Enqueue(() =>
+        {
+            if (!saveSlotHasData)
+                return true; // 空存档不走删档分支，无需延迟
+            entryTaskManager.InsertDelay(deleteStepDebugDelayMs);
+            return true;
+        });
+    }
+
+    /// <summary>删档流程里打一条日志，方便观察卡在哪一步（仅有存档时打印）。</summary>
+    private void EnqueueDeleteDebugLog(string step)
+        => entryTaskManager.Enqueue(() =>
+        {
+            if (saveSlotHasData)
+                log.Information("[AutoPalExplorer] [入口][删档] {Step}", step);
+            return true;
+        });
+
+    /// <summary>只有 saveSlotHasData 为真时才等待 Addon；否则直接完成（跳过删档分支）。</summary>
+    private unsafe void EnqueueWaitIfHasData(string addonName)
+        => entryTaskManager.Enqueue(() =>
+            !saveSlotHasData || (TryGetAddonByName<AtkUnitBase>(addonName, out var a) && IsAddonReady(a)));
+
+    /// <summary>只有 saveSlotHasData 为真时才触发 Callback；否则直接完成（跳过删档分支）。</summary>
+    private unsafe void EnqueueFireIfHasData(string addonName, params object[] values)
+        => entryTaskManager.Enqueue(() =>
+        {
+            if (!saveSlotHasData)
+                return true;
+            if (TryGetAddonByName<AtkUnitBase>(addonName, out var a) && IsAddonReady(a))
+            {
+                Callback.Fire(a, true, values);
+                return true;
+            }
+            return false;
+        });
+
+    // 删档收尾：返回菜单时 -1 的节流，避免每帧连点把菜单也退掉
+    private DateTime nextDeleteReturnFireAt = DateTime.MinValue;
+
+    /// <summary>
+    /// 删档确认后确保回到 DeepDungeonMenu：
+    /// - 已在菜单 -> 完成；
+    /// - 还停在删档模式的 DeepDungeonSaveData -> 触发 -1 返回（带节流），下一帧再检查；
+    /// - 两者都还没出现 -> 继续等。
+    /// </summary>
+    private unsafe void EnqueueEnsureBackToMenuAfterDelete()
+        => entryTaskManager.Enqueue(() =>
+        {
+            if (!saveSlotHasData)
+                return true;
+
+            if (TryGetAddonByName<AtkUnitBase>("DeepDungeonMenu", out var menu) && IsAddonReady(menu))
+                return true; // 已回到菜单
+
+            var now = DateTime.UtcNow;
+            if (now >= nextDeleteReturnFireAt &&
+                TryGetAddonByName<AtkUnitBase>("DeepDungeonSaveData", out var sd) && IsAddonReady(sd))
+            {
+                Callback.Fire(sd, true, -1);
+                nextDeleteReturnFireAt = now.AddSeconds(1.0);
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] [入口][删档] 仍在 SaveData，触发 -1 返回菜单。");
+            }
+
+            return false; // 继续等，直到 DeepDungeonMenu 出现
+        });
+
+    /// <summary>入队“勾选删档确认框”任务（saveSlotHasData 为假时跳过）。</summary>
+    private unsafe void EnqueueClickDeleteCheckbox()
+        => entryTaskManager.Enqueue(() =>
+        {
+            if (!saveSlotHasData)
+                return true;
+            if (TryGetAddonByName<AtkUnitBase>("SelectYesno", out var yn) && IsAddonReady(yn))
+            {
+                ClickDeleteConfirmCheckbox(yn);
+                return true;
+            }
+            return false;
+        });
 
     private unsafe bool InteractEntryObject(ulong entryObjectId)
     {
@@ -386,7 +804,10 @@ public sealed partial class AutoPalController
     {
         if (TryGetAddonByName<AtkUnitBase>("SelectString", out var ss) && IsAddonReady(ss))
         {
-            Callback.Fire(ss, true, 0);
+            // 这个 SelectString 是“起始层选择”：0=第1层, 1=21, 2=31, 3=51, 4=71
+            Callback.Fire(ss, true, entryStartFloorIndex);
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] [入口] 选择起始层索引 {Idx}。", entryStartFloorIndex);
             return true; // 完成
         }
 
@@ -399,6 +820,197 @@ public sealed partial class AutoPalController
         }
 
         return false; // 继续等待/重试
+    }
+
+    /// <summary>
+    /// 轮次控制：回到入口地图时判断是否“刚打完一轮”。
+    /// - 中途出本（当前层 &lt; 停止层）：不计数，正常续打。
+    /// - 打到停止层出本：完成一轮。若已达设定轮数则播放提示音、通知并 Stop；
+    ///   否则标记下一轮“重开”（删存档 + 选起始层）并进入 RoundWaitSeconds 等待。
+    /// </summary>
+    private void HandleRoundTransitionAtEntrance()
+    {
+        if (roundCounted)
+            return; // 本次入口访问已处理过
+        if (currentFloor <= 0 || currentFloor < config.StopFloor)
+            return; // 还没打到停止层（或只是中途出本），不算一轮
+
+        roundCounted = true;
+        completedRounds++;
+
+        var total = Math.Max(1, config.RoundCount);
+        log.Information("[AutoPalExplorer] [轮次] 第 {Done}/{Total} 轮完成（打到第 {Floor} 层）。",
+            completedRounds, total, currentFloor);
+
+        if (completedRounds >= total)
+        {
+            NotifyRoundsAllDone(total);
+            Stop();
+            return;
+        }
+
+        // 还有轮次：下一轮重开（删存档 + 选起始层），先等 RoundWaitSeconds 秒再排本
+        startFreshRound = true;
+        entrySubmitted = false;
+        entryTaskManager.Abort();
+        var wait = Math.Max(0, config.RoundWaitSeconds);
+        roundWaitUntil = DateTime.UtcNow.AddSeconds(wait);
+        SetIntent($"轮次：第 {completedRounds}/{total} 轮完成，{wait}s 后重开");
+    }
+
+    /// <summary>全部轮次打完：聊天通知 + 播放提示音。</summary>
+    private void NotifyRoundsAllDone(int total)
+    {
+        var msg = $"[AutoPalExplorer] 已完成设定的 {total} 轮（打到第 {config.StopFloor} 层），自动停止。";
+        log.Information(msg);
+
+        try { ECommons.DalamudServices.Svc.Chat?.Print(msg); }
+        catch (Exception ex) { log.Warning($"[AutoPalExplorer] 轮次完成通知失败：{ex.Message}"); }
+
+        try { FFXIVClientStructs.FFXIV.Client.UI.UIGlobals.PlayChatSoundEffect(6); }
+        catch (Exception ex) { log.Warning($"[AutoPalExplorer] 轮次完成提示音失败：{ex.Message}"); }
+    }
+
+    /// <summary>
+    /// 读取 DeepDungeonSaveData 中指定存档槽的文本，判断是否为空存档（“从头开始”）。
+    /// 节点路径：List Component Node 6 -> ListItemRenderer(slot1=2 / slot2=21001) -> Text Node 7。
+    /// 读不到节点时，为避免误触发删档流程把进本卡死，默认按“空存档”处理。
+    /// </summary>
+    private unsafe bool IsSaveSlotEmpty(AtkUnitBase* addon, int slot)
+    {
+        if (addon == null)
+        {
+            log.Warning("[AutoPalExplorer] [入口][存档检测] addon 为空。");
+            return true;
+        }
+
+        var itemNodeId = slot == 1 ? 21001u : 2u;
+        log.Information("[AutoPalExplorer] [入口][存档检测] 目标 slot={Slot}（{Name}），ListItemRenderer 节点 id={ItemId}。",
+            slot, slot == 1 ? "2号存档" : "1号存档", itemNodeId);
+
+        // 先把 List(6) 组件里的所有子节点 dump 出来，核对真实节点 id / 文本
+        DumpSaveSlotList(addon);
+
+        var listNode = addon->GetNodeById(6);                 // List Component Node 6
+        var itemNode = GetComponentNodeById(listNode, itemNodeId); // ListItemRenderer
+        var textNode = GetComponentNodeById(itemNode, 7);     // Text Node 7
+        if (textNode == null)
+        {
+            log.Warning("[AutoPalExplorer] [入口][存档检测] slot={Slot} 读不到文本节点（List6={L} Item{ItemId}={I} Text7=null），默认按“空存档”处理。",
+                slot, listNode == null ? "null" : "ok", itemNodeId, itemNode == null ? "null" : "ok");
+            return true;
+        }
+
+        var text = ((AtkTextNode*)textNode)->NodeText.GetText() ?? string.Empty;
+        var empty = text.Contains("从头开始");
+        log.Information("[AutoPalExplorer] [入口][存档检测] slot={Slot} 读到文本=\"{Text}\" -> {State}。",
+            slot, text, empty ? "空(从头开始)" : "有存档");
+        return empty;
+    }
+
+    /// <summary>调试：dump DeepDungeonSaveData 里 List(6) 组件的所有子节点（NodeId/类型/内部 Text7 文本）。</summary>
+    private unsafe void DumpSaveSlotList(AtkUnitBase* addon)
+    {
+        var listNode = addon->GetNodeById(6);
+        if (listNode == null)
+        {
+            log.Information("[AutoPalExplorer] [入口][存档检测][Dump] 未找到 List Node(6)。");
+            return;
+        }
+
+        var comp = listNode->GetAsAtkComponentNode();
+        if (comp == null || comp->Component == null)
+        {
+            log.Information("[AutoPalExplorer] [入口][存档检测][Dump] Node(6) 不是组件节点。");
+            return;
+        }
+
+        var count = comp->Component->UldManager.NodeListCount;
+        log.Information("[AutoPalExplorer] [入口][存档检测][Dump] List(6) 组件内节点数={Count}：", count);
+        for (var i = 0; i < count; i++)
+        {
+            var n = comp->Component->UldManager.NodeList[i];
+            if (n == null)
+                continue;
+
+            var txt = string.Empty;
+            var cn = n->GetAsAtkComponentNode();
+            if (cn != null && cn->Component != null)
+            {
+                var t = cn->Component->UldManager.SearchNodeById(7);
+                if (t != null)
+                    txt = ((AtkTextNode*)t)->NodeText.GetText() ?? string.Empty;
+            }
+
+            log.Information("[AutoPalExplorer] [入口][存档检测][Dump]   [{I}] NodeId={Id} Type={Type} 内部Text7=\"{Txt}\"",
+                i, n->NodeId, n->Type, txt);
+        }
+    }
+
+    /// <summary>
+    /// 勾选“删除存档”确认窗口(SelectYesno)里的确认复选框。
+    /// 节点路径：CheckBox Component Node 4 -> Collision Node 5，通过模拟点击碰撞节点触发。
+    /// </summary>
+    private unsafe void ClickDeleteConfirmCheckbox(AtkUnitBase* addon)
+    {
+        var checkboxNode = addon->GetNodeById(4);
+        var collision = GetComponentNodeById(checkboxNode, 5);
+        if (collision == null)
+        {
+            log.Warning("[AutoPalExplorer] [入口] 删档：未找到确认复选框碰撞节点(4/5)。");
+            return;
+        }
+
+        ClickCollisionNode(addon, collision);
+        if (config.devMode)
+            log.Information("[AutoPalExplorer] [入口] 删档：已勾选确认复选框。");
+    }
+
+    /// <summary>
+    /// 从一个组件节点内部按 id 取子节点。
+    /// 先用 SearchNodeById；对动态生成的列表项(ListItemRenderer，如 21001/21002)SearchNodeById 找不到，
+    /// 再回退遍历 NodeList 按 NodeId 匹配。
+    /// </summary>
+    private static unsafe AtkResNode* GetComponentNodeById(AtkResNode* node, uint id)
+    {
+        if (node == null)
+            return null;
+
+        var comp = node->GetAsAtkComponentNode();
+        if (comp == null || comp->Component == null)
+            return null;
+
+        var found = comp->Component->UldManager.SearchNodeById(id);
+        if (found != null)
+            return found;
+
+        // 回退：扫组件的 NodeList（运行时动态生成的列表项只在这里，SearchNodeById 走模板树扫不到）
+        var count = comp->Component->UldManager.NodeListCount;
+        for (var i = 0; i < count; i++)
+        {
+            var n = comp->Component->UldManager.NodeList[i];
+            if (n != null && n->NodeId == id)
+                return n;
+        }
+
+        return null;
+    }
+
+    /// <summary>对碰撞节点模拟一次鼠标点击（取该节点上注册的 MouseClick 事件转发给 addon）。</summary>
+    private static unsafe void ClickCollisionNode(AtkUnitBase* addon, AtkResNode* node)
+    {
+        if (addon == null || node == null)
+            return;
+
+        var evt = node->AtkEventManager.Event;
+        while (evt != null && evt->State.EventType != AtkEventType.MouseClick)
+            evt = evt->NextEvent;
+
+        if (evt == null)
+            return;
+
+        var data = new AtkEventData();
+        addon->ReceiveEvent(evt->State.EventType, (int)evt->Param, evt, &data);
     }
 
     private unsafe void TryClickNextPilgrim()

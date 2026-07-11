@@ -188,34 +188,40 @@ public sealed class PomanderManager
     /// </summary>
     private void RunPomanderDecisions(IPlayerCharacter player)
     {
+        // 使用范围：All = 全部魔陶器 + 杜松香；SelfBuffOnly = 仅强化自身(Strength)和强化防御(Steel)
+        var useAll = config.PomanderMode == PomanderUsageMode.All;
+
         // ---- 0. 杜松香：满 3 个用一次（DeepDungeonStatus callback 12, 0）----
         // 注意：不在这里立即 -1。杜松香是全队共享池，使用后游戏会广播“点燃杜松香”消息，
         // 由 CalculateOnChat 统一 -1（自己/队友一视同仁），避免和消息重复扣减。
-        if (juniperCount >= JuniperUseThreshold)
+        // 仅在“使用全部魔陶器和杜松香”模式下才用。
+        if (useAll && juniperCount >= JuniperUseThreshold)
         {
             chatGui.Print($"[AutoPalExplorer] 杜松香数量达到 {juniperCount}，自动使用杜松香。");
             UseJuniper();
         }
 
-        // ---- 1. debuff 检测 ----
-
-        // 1.1 诅咒（1087） -> 魔陶器：解咒 (Purity)
-        var purityEntry = FindPomanderByType("Purity");
-        if (purityEntry != null && purityEntry.Count > 0 && HasStatus(player, DebuffIds.DebuffCurse))
+        // ---- 1. debuff 检测（仅“使用全部”模式）----
+        if (useAll)
         {
-            // Svc.Toasts.ShowNormal("检测到 Debuff【诅咒 1087】，自动使用魔陶器：解咒 (Purity)");
-            chatGui.Print("[AutoPalExplorer] 检测到 Debuff【诅咒 1087】，自动使用魔陶器：解咒 (Purity)");
-            TryUsePomander(purityEntry, "检测到 Debuff【诅咒 1087】，自动使用魔陶器：解咒 (Purity)");
-        }
+            // 1.1 诅咒（1087） -> 魔陶器：解咒 (Purity)
+            var purityEntry = FindPomanderByType("Purity");
+            if (purityEntry != null && purityEntry.Count > 0 && HasStatus(player, DebuffIds.DebuffCurse))
+            {
+                // Svc.Toasts.ShowNormal("检测到 Debuff【诅咒 1087】，自动使用魔陶器：解咒 (Purity)");
+                chatGui.Print("[AutoPalExplorer] 检测到 Debuff【诅咒 1087】，自动使用魔陶器：解咒 (Purity)");
+                TryUsePomander(purityEntry, "检测到 Debuff【诅咒 1087】，自动使用魔陶器：解咒 (Purity)");
+            }
 
-        // 1.2 其他负面魔法（1089/1090/1094/1097）-> 魔陶器：魔法效果解除 (Serenity)
-        var serenityEntry = FindPomanderByType("Serenity");
-        if (serenityEntry != null && serenityEntry.Count > 0 && HasAnyStatus(player, DebuffIds.DebuffsSerenity))
-        {
+            // 1.2 其他负面魔法（1089/1090/1094/1097）-> 魔陶器：魔法效果解除 (Serenity)
+            var serenityEntry = FindPomanderByType("Serenity");
+            if (serenityEntry != null && serenityEntry.Count > 0 && HasAnyStatus(player, DebuffIds.DebuffsSerenity))
+            {
 
-            chatGui.Print("[AutoPalExplorer] 检测到 Debuff【最大体力减少/伤害降低/禁止使用道具/禁止体力自然恢复】，自动使用魔陶器：魔法效果解除 (Serenity)");
-            // Svc.Toasts.ShowNormal("检测到 Debuff【最大体力减少/伤害降低/禁止使用道具/禁止体力自然恢复】，自动使用魔陶器：魔法效果解除 (Serenity)");
-            TryUsePomander(serenityEntry, "检测到 Debuff【最大体力减少/伤害降低/禁止使用道具/禁止体力自然恢复】，自动使用魔陶器：魔法效果解除 (Serenity)");
+                chatGui.Print("[AutoPalExplorer] 检测到 Debuff【最大体力减少/伤害降低/禁止使用道具/禁止体力自然恢复】，自动使用魔陶器：魔法效果解除 (Serenity)");
+                // Svc.Toasts.ShowNormal("检测到 Debuff【最大体力减少/伤害降低/禁止使用道具/禁止体力自然恢复】，自动使用魔陶器：魔法效果解除 (Serenity)");
+                TryUsePomander(serenityEntry, "检测到 Debuff【最大体力减少/伤害降低/禁止使用道具/禁止体力自然恢复】，自动使用魔陶器：魔法效果解除 (Serenity)");
+            }
         }
 
         // 1.3 魔陶器：自身强化 (Strength)
@@ -237,6 +243,10 @@ public sealed class PomanderManager
             // Svc.Toasts.ShowNormal("检测到 Debuff【最大体力减少/伤害降低/禁止使用道具/禁止体力自然恢复】，自动使用魔陶器：魔法效果解除 (Serenity)");
             TryUsePomander(steelEntry, "自动使用魔陶器：自身强化");
         }
+
+        // 以下（形态变化 + 阈值触发的其余魔陶器）仅在“使用全部魔陶器和杜松香”模式下执行。
+        if (!useAll)
+            return;
 
         // 1.5 如果血量低于40%并且在战斗状态中，使用魔陶器：形态变化
         var witchingEntry = FindPomanderByType("Witching");

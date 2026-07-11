@@ -220,14 +220,18 @@ public sealed class Plugin : IDalamudPlugin
         }
 
 
-        if (Regex.IsMatch(text, @"第(100|[1-9]?[0-9])朝圣路"))
+        var levelMatch = Regex.Match(text, @"第(100|[1-9]?[0-9])朝圣路");
+        if (levelMatch.Success)
         {
             if (config.devMode)
                 Log.Information("下一层");
+            if (int.TryParse(levelMatch.Groups[1].Value, out var floor))
+                controller.NotifyFloorNumber(floor);
             controller.nextLevelActivated();
         }
 
-        if (Regex.IsMatch(text, @"第([1-9]0)朝圣路"))
+        // 整数层（10/20/…/90）是 Boss 房，另外第 99 层也是 Boss 房
+        if (Regex.IsMatch(text, @"第([1-9]0|99)朝圣路"))
         {
             controller.NotifyBossFloor();
         }

@@ -82,6 +82,40 @@ public sealed partial class AutoPalController
     private DateTime nextBossAddonFireAt = DateTime.MinValue;
     // 玩家阵亡后点掉复活确认窗口（SelectYesno）的节流
     private DateTime nextReviveAddonFireAt = DateTime.MinValue;
+
+    // ==== 99 / 100 层特殊收尾流程 ====
+    // 当前层数（由聊天“第N朝圣路”解析，用于 99/100 层特殊流程）
+    private int currentFloor;
+    // 99 层：Boss 已清后，前往 2014940 交互 → 等 5 秒 → 走进传送装置
+    private bool floor99AltarInteracted;
+    private DateTime floor99AltarInteractedAt = DateTime.MinValue;
+    private const double Floor99WaitSeconds = 5.0;
+    // 100 层：移动到坐标 → 交互 2014754 → 等 3 秒 → 去退出点 2005809 → 点确认窗口退出
+    private enum Floor100Stage { MovingToCoord, MovingToInteract, WaitingAfterInteract, GoingToExit, Done }
+    private Floor100Stage floor100Stage = Floor100Stage.MovingToCoord;
+    private DateTime floor100InteractedAt = DateTime.MinValue;
+    private static readonly Vector3 Floor100StartPoint = new(-0.09f, -700.42f, 0.00f);
+    private const double Floor100WaitSeconds = 3.0;
+    private const float Floor100ReachRadius = 3.0f;
+
+    // ==== 轮次控制：打到指定层停止 + 多轮 ====
+    // 存档槽索引：0 = 1号存档(callback 0,0)，1 = 2号存档(callback 1,0)
+    private int SaveSlotIndex => config.SaveSlot == 1 ? 1 : 0;
+    // 起始层 -> 进本最后一个 SelectString 的选项索引：1=0, 21=1, 31=2, 51=3, 71=4
+    private int StartFloorSelectIndex => config.StartFloor switch
+    {
+        21 => 1,
+        31 => 2,
+        51 => 3,
+        71 => 4,
+        _ => 0, // 1 层或未知值
+    };
+    private int completedRounds;                       // 已完成轮数
+    private bool startFreshRound;                       // 下一次进本要“重开一轮”：删存档 + 选起始层
+    private bool roundCounted;                          // 本次回到入口是否已计过一轮（防止重复计数）
+    private bool saveSlotHasData;                       // 进本时读到的：目标存档槽里是否有存档
+    private int entryStartFloorIndex;                   // 本次进本序列最终 SelectString 要选的层索引
+    private DateTime roundWaitUntil = DateTime.MinValue; // 删档后重新排本前的等待门
     private float EnemySearchRadius => MathF.Max(1.0f, config.EnemySearchRadius);
     // 车头支援：到进战队友多近算“到位”
     private float HelpPartyArriveRadius => MathF.Max(0.5f, config.HelpPartyArriveRadius);
@@ -89,6 +123,14 @@ public sealed partial class AutoPalController
     private float PullRange => config.PullRange;
     private int PullActionIntervalMs => Math.Max(200, config.PullActionIntervalMs);
     private DateTime nextPullActionAt = DateTime.MinValue;
+
+    // 光耀 buff：身上带 status 4708 时，不开 rotation，直接读条使用 GCD 44492（无需目标/靠近）
+    private const ushort RadiantStatusId = 4708;
+    private const uint RadiantActionId = 44492;
+    private DateTime nextRadiantActionAt = DateTime.MinValue;
+
+    // 光耀烛台：≤此距离(米)时抢在宝箱前优先互动，否则等到所有宝箱之后再处理
+    private float RadiantCandlestandNearRange => MathF.Max(0f, config.RadiantCandlestandNearRange);
 
     // 移动速度检测：读条技能必须站定才放，否则移动会打断读条
     private Vector3 lastMovePos;
@@ -333,11 +375,21 @@ public sealed partial class AutoPalController
         ResetBlindWalkState();
         ResetStaticObjectsState();
         ClearLockedChest();
+        // 99/100 层特殊流程
+        currentFloor = 0;
+        ResetFloorSpecialState();
         // 跟车
         wasInCombatOnBossFloor = false;
         // 地宫入口
         entrySubmitted = false;
         entryTaskManager.Abort();
+        // 轮次控制：启用时首次进本即“重开一轮”（删旧存档 + 选起始层）
+        completedRounds = 0;
+        roundCounted = false;
+        saveSlotHasData = false;
+        entryStartFloorIndex = 0;
+        roundWaitUntil = DateTime.MinValue;
+        startFreshRound = config.EnableRoundLimit;
 
         if (IsFollowMode)
         {
@@ -369,11 +421,17 @@ public sealed partial class AutoPalController
         ResetBlindWalkState();
         ResetStaticObjectsState();
         ClearLockedChest();
+        // 99/100 层特殊流程
+        currentFloor = 0;
+        ResetFloorSpecialState();
         // 跟车
         wasInCombatOnBossFloor = false;
         // 地宫入口
         entryTaskManager.Abort();
-        BreakActWithShift();
+        // 轮次控制
+        startFreshRound = false;
+        roundCounted = false;
+        roundWaitUntil = DateTime.MinValue;
 
         if (config.devMode)
             log.Information("[AutoPalExplorer] 已停止。");
@@ -440,6 +498,10 @@ public sealed partial class AutoPalController
 
         // ===== 优先级处理链：从高到低，任意一个接管本帧即 return =====
 
+        // 光耀 buff（status 4708）：只要有这个 buff 就直接使用读条 GCD 44492，优先于战斗/探索
+        if (HandleRadiantBuff(player))
+            return;
+
         // 1. 本地进战：交给 BMRAI 并暂停导航（脱战则关 BMRAI 后继续往下）
         if (HandleCombat(inCombat))
             return;
@@ -450,6 +512,10 @@ public sealed partial class AutoPalController
 
         // Boss 房 / 排队“挑战下一朝圣路”
         if (HandleBossFloorPhase(pos))
+            return;
+
+        // 100 层特殊收尾流程（从 99 层传送过来后，非 Boss 房）
+        if (currentFloor == 100 && HandleFloor100(pos))
             return;
 
         // 2. 更新导航 & 目标检测
@@ -468,10 +534,13 @@ public sealed partial class AutoPalController
         // 3. 探索优先级决策（命中即接管本帧）
         if (HandleRegenerationAltar(pos, currentTarget)) return;                       // 2.1 再生祭坛（复活阵亡队友）
         if (!IsFollowMode && TryHelpPartyInCombat(pos, player, currentTarget)) return; // 2.2 车头模式支援队友
+        // 光耀烛台互动暂时禁用（需要时取消注释这两行即可恢复）
+        // if (HandleRadiantCandlestand(pos, currentTarget, RadiantCandlestandNearRange)) return; // 2.3 光耀烛台（≤30m 抢在宝箱前）
         if (HandleBuriedChest(pos, currentTarget)) return;                             // 3.0 埋藏的宝藏
         if (HandleBlindBuriedSearch(pos)) return;                                      // 3.0b 盲踩埋藏宝藏
         if (HandleLockedChestPriority(pos, currentTarget)) return;                     // 3.0c 锁定中的普通宝箱
         if (HandleNormalChest(pos, currentTarget)) return;                             // 3.1 普通宝箱
+        // if (HandleRadiantCandlestand(pos, currentTarget, float.MaxValue)) return;      // 3.1b 光耀烛台（宝箱之后，任意距离）
         if (HandleActiveExit(pos, currentTarget)) return;                              // 3.2 激活的传送装置
         if (HandleNearestEnemy(pos, player, currentTarget)) return;                    // 3.3 最近怪物
 

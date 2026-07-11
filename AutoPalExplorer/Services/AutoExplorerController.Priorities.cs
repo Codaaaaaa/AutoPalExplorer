@@ -53,6 +53,7 @@ public sealed partial class AutoPalController
         lastChestInteractObjectId = 0;
         ResetBlindWalkState();
         ResetStaticObjectsState();
+        ResetFloorSpecialState(); // 99/100 层收尾状态（不清 currentFloor，那是聊天设置的）
         ClearLockedChest();
 
         // 跟车
@@ -60,6 +61,15 @@ public sealed partial class AutoPalController
 
         if (config.devMode)
             log.Information("[AutoPalExplorer] 检测到换层，已重置状态 (Territory={Territory}).", clientState.TerritoryType);
+    }
+
+    /// <summary>重置 99 / 100 层特殊收尾流程的状态（不重置 currentFloor，它由聊天“第N朝圣路”维护）。</summary>
+    private void ResetFloorSpecialState()
+    {
+        floor99AltarInteracted = false;
+        floor99AltarInteractedAt = DateTime.MinValue;
+        floor100Stage = Floor100Stage.MovingToCoord;
+        floor100InteractedAt = DateTime.MinValue;
     }
 
     /// <summary>0.5 检测状态并使用魔陶器（跟车模式 / Boss 层不使用）。</summary>
@@ -123,8 +133,11 @@ public sealed partial class AutoPalController
         if (bmraiOn)
         {
             if (config.devMode)
-                log.Information("[AutoPalExplorer] 脱离战斗，关闭 BMRAI。");
+                log.Information("[AutoPalExplorer] 脱离战斗，关闭 BMRAI 和 Rotation。");
             EnsureBmraiOff();
+            // 之前只关了 BMRAI 没关 Rotation（EnsureBmraiOff 里的 /rotation Off 被注释掉了），
+            // 导致脱战后 Rotation 仍在运行。这里补一刀，脱战时一并关闭。
+            EnsureRotationOff();
         }
         // 跟车模式：BMRAI 的开关由 StartFollowLoop / Boss 战结束那段逻辑控制，这里不动
         return false;
@@ -245,6 +258,71 @@ public sealed partial class AutoPalController
         return true;
     }
 
+    /// <summary>
+    /// 光耀烛台：找到烛台对象就前往并交互（交互方式同再生祭坛）。
+    /// maxDistance 限制触发距离：≤30m 时以高优先级抢在宝箱前；宝箱之后再用 float.MaxValue 兜底任意距离。
+    /// 找不到（或超出 maxDistance）时返回 false，交回后续逻辑。
+    /// </summary>
+    private bool HandleRadiantCandlestand(Vector3 pos, Vector3? currentTarget, float maxDistance)
+    {
+        // 找最近的、在 maxDistance 内的烛台对象
+        IGameObject? candle = null;
+        var bestDistSq = maxDistance * maxDistance;
+        foreach (var obj in objectTable)
+        {
+            if (obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventObj)
+                continue;
+
+            if (!ObjectIds.RadiantCandlestandIds.Contains(obj.BaseId))
+                continue;
+
+            var ddx = obj.Position.X - pos.X;
+            var ddz = obj.Position.Z - pos.Z;
+            var dsq = ddx * ddx + ddz * ddz;
+            if (dsq < bestDistSq)
+            {
+                bestDistSq = dsq;
+                candle = obj;
+            }
+        }
+
+        if (candle is null)
+            return false;
+
+        var cp = candle.Position;
+        var dx = cp.X - pos.X;
+        var dz = cp.Z - pos.Z;
+        var distSq = dx * dx + dz * dz;
+
+        if (config.devMode)
+            log.Information("[AutoPalExplorer] 光耀烛台：距离={Dist:0.00}。", MathF.Sqrt(distSq));
+
+        // 到点附近：停下并尝试交互
+        if (distSq <= ChestDoneRadius * ChestDoneRadius)
+        {
+            if (navigator.IsBusy)
+                navigator.Stop();
+
+            SetIntent("光耀烛台：交互");
+            if (candle.IsTargetable)
+                TryInteractWithObject(candle, "光耀烛台");
+
+            return true;
+        }
+
+        // 不在范围内：导航过去（带简单避陷阱）
+        if (!navigator.IsBusy || IsDifferentTarget(currentTarget, cp, 1.0f))
+        {
+            SetIntent("光耀烛台：前往");
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] 导航至光耀烛台。");
+
+            TrySafeMoveTo(cp, TrapAvoidRadiusCfg);
+        }
+
+        return true;
+    }
+
     /// <summary>3.0 埋藏的宝藏（最高优先级实体）：找到就只做这一件事——前往并停在触发范围内等触发。</summary>
     private bool HandleBuriedChest(Vector3 pos, Vector3? currentTarget)
     {
@@ -344,6 +422,15 @@ public sealed partial class AutoPalController
     /// <summary>3.2 激活的传送装置：走到装置旁停下，等待玩家手动交互。</summary>
     private bool HandleActiveExit(Vector3 pos, Vector3? currentTarget)
     {
+        // 限制：只要有队友阵亡就不去传送装置，先留在本层继续探索，
+        // 直到找到并激活再生祭坛、复活队友后（无人阵亡）才允许前往传送装置。
+        if (HasDeadOtherPlayer())
+        {
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] 有队友阵亡，暂不前往传送装置，继续探索寻找再生祭坛。");
+            return false;
+        }
+
         Vector3? exitPos = null;
         if (exitDetector.HasActiveExit && exitDetector.Exit is { } activeExit)
         {

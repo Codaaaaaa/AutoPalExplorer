@@ -67,6 +67,25 @@ public sealed partial class AutoPalController
             log.Information("[AutoPalExplorer] 标记换层（nextLevelActivated）。");
     }
 
+    public void NotifyFloorNumber(int floor)
+    {
+        currentFloor = floor;
+
+        // 进入了新的一层，说明已离开入口地图 -> 允许下次回到入口时重新计一轮
+        roundCounted = false;
+
+        // 100 层不是 Boss 房，且是从 99 层直接传送过来的（不会触发“成功发送了参加申请”重置），
+        // 需要在这里手动清掉 Boss 房标记，改走 100 层收尾流程。
+        if (floor == 100)
+        {
+            isBossFloor = false;
+            isBossFloorQueueing = false;
+        }
+
+        if (config.devMode)
+            log.Information("[AutoPalExplorer] 当前层数 = {Floor}。", floor);
+    }
+
     public void NotifyBossFloor()
     {
         isBossFloor = true;
@@ -75,10 +94,6 @@ public sealed partial class AutoPalController
         bossExitReachedAt = DateTime.MinValue;
         nextChallengeAttemptAt = DateTime.MinValue;
         wasInCombatOnBossFloor = false;
-        if (IsFollowMode)
-        {
-            BreakActWithShift();
-        }
 
         if (config.devMode)
             log.Information("[AutoPalExplorer] 检测到 Boss 层聊天提示，启用 Boss 房逻辑。");
@@ -96,6 +111,8 @@ public sealed partial class AutoPalController
         // 地宫入口：申请已发出，结束入口 UI 流程
         entrySubmitted = true;
         entryTaskManager.Abort();
+        // 本轮已成功进本：后续中途出本(如 30 层出来续打)不再走“重开一轮”的删档 + 选层流程
+        startFreshRound = false;
 
         if (config.devMode)
             log.Information("[AutoPalExplorer] 收到成功发送参加申请提示，结束 Boss 流程逻辑。");

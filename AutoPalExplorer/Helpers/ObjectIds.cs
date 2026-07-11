@@ -21,6 +21,12 @@ namespace AutoPalExplorer.Helpers
             2014755u, // 再生祭坛
         };
 
+        // 光耀烛台
+        public static readonly HashSet<uint> RadiantCandlestandIds = new()
+        {
+            2014759u,
+        };
+
         /// <summary>
         /// 宝箱 DataId（Chest）
         /// </summary>
@@ -58,8 +64,6 @@ namespace AutoPalExplorer.Helpers
             2007358u,
             // 埋的
             2007543u,
-            // 烛台,
-            // 2014759u,
         };
 
         // 埋藏的宝藏
@@ -85,7 +89,13 @@ namespace AutoPalExplorer.Helpers
 
         // 下10层入口
         public const uint NextPilgrimNpcBaseId = 2014758;
-        
+
+        // 99 层：打完 Boss 后交互的物件（交互后等 5 秒再走进传送装置传送到 100 层）
+        public const uint Floor99AltarBaseId = 2014940;
+
+        // 100 层：移动到指定坐标后交互的物件（交互 3 秒后出现退出点 2005809）
+        public const uint Floor100InteractBaseId = 2014754;
+
         public static bool IsBronzeChest(uint baseId)
             => BronzeChestIds.Contains(baseId);
 

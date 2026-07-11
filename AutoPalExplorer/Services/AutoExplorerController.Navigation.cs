@@ -119,6 +119,16 @@ public sealed partial class AutoPalController
         return null;
     }
 
+    private IGameObject? FindObjectByBaseIds(HashSet<uint> baseIds)
+    {
+        foreach (var obj in objectTable)
+        {
+            if (baseIds.Contains(obj.BaseId))
+                return obj;
+        }
+        return null;
+    }
+
     /// <summary>
     /// 检查某个点附近是否有陷阱（EventObj + TrapIds）。
     /// 返回是否危险，以及最近陷阱的位置。

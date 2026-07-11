@@ -17,6 +17,7 @@ using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Game.ClientState.Keys;
 using Dalamud.Plugin.Services;
 
+using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.Game.Object;
 using FFXIVClientStructs.FFXIV.Component.GUI;
@@ -93,6 +94,82 @@ public sealed partial class AutoPalController
         {
             navigator.Stop();
             navigator.TryMoveTo(enemy.Position);
+        }
+    }
+
+    /// <summary>
+    /// 光耀 buff（身上带 status 4708）：只要有这个 buff 就直接使用读条 GCD 44492。
+    /// - 不开 BMRAI / rotation（若开着则关掉）；
+    /// - 不需要目标、不需要靠近怪物，站定后直接对自身使用 44492；
+    /// - 读条会被移动打断，所以先停下、等站稳再放。
+    /// 返回 true 表示本帧由该逻辑接管。
+    /// </summary>
+    private bool HandleRadiantBuff(IPlayerCharacter player)
+    {
+        if (!PlayerHasStatus(player, RadiantStatusId))
+            return false;
+
+        // 不交给自动循环：若之前开了 BMRAI/Rotation，这里一并关掉（有 bmraiOn 守卫，只会触发一次）
+        if (bmraiOn)
+        {
+            EnsureBmraiOff();
+            EnsureRotationOff();
+        }
+
+        // 停下再放；读条 GCD 被移动打断，还在移动（减速中）就本帧只停不放，等站稳
+        if (navigator.IsBusy)
+            navigator.Stop();
+
+        if (IsPlayerMoving)
+        {
+            SetIntent("光耀buff(4708)：等待站定后使用 44492");
+            return true;
+        }
+
+        // 节流使用 44492
+        var now = DateTime.UtcNow;
+        if (now >= nextRadiantActionAt)
+        {
+            SetIntent("光耀buff(4708)：使用 44492");
+            UseActionById(RadiantActionId);
+            nextRadiantActionAt = now.AddMilliseconds(PullActionIntervalMs);
+
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] 光耀buff(4708)：直接使用 Action 44492。");
+        }
+
+        return true;
+    }
+
+    /// <summary>检查玩家是否带有指定 statusId。</summary>
+    private static bool PlayerHasStatus(IPlayerCharacter player, ushort statusId)
+    {
+        foreach (var s in player.StatusList)
+        {
+            if (s.StatusId == statusId)
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>按 ActionId 对自身使用技能（用于光耀 buff 的 44492，无需目标）。</summary>
+    private unsafe void UseActionById(uint actionId)
+    {
+        try
+        {
+            var am = ActionManager.Instance();
+            if (am == null)
+            {
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] UseActionById：ActionManager 实例为空。");
+                return;
+            }
+
+            am->UseAction(ActionType.Action, actionId);
+        }
+        catch (Exception ex)
+        {
+            log.Warning($"[AutoPalExplorer] UseActionById(Action={actionId}) 异常：{ex.Message}");
         }
     }
 

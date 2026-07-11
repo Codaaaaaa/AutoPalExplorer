@@ -14,6 +14,12 @@ namespace AutoPalExplorer
         Online = 1   // 联机模式：和服务器共享 ignoredBlindLocations
     }
 
+    public enum PomanderUsageMode
+    {
+        SelfBuffOnly = 0, // 仅使用强化自身和防御魔陶器
+        All = 1           // 使用全部魔陶器和杜松香
+    }
+
     public class Configuration : IPluginConfiguration
     {
         public int Version { get; set; } = 1;
@@ -73,8 +79,16 @@ namespace AutoPalExplorer
         // 开怪指令的最小重复间隔（毫秒），避免每帧狂点
         public int PullActionIntervalMs { get; set; } = 1500;
 
+        // 光耀烛台：≤此距离(米)时抢在宝箱前优先互动，否则等到所有宝箱之后再处理
+        public float RadiantCandlestandNearRange { get; set; } = 30.0f;
+
         // 使用魔陶器
         public bool UsingPomander { get; set; } = true;
+
+        // 魔陶器使用范围（仅在 UsingPomander 为 true 时生效）
+        // SelfBuffOnly：仅使用强化自身和防御魔陶器
+        // All：使用全部魔陶器和杜松香
+        public PomanderUsageMode PomanderMode { get; set; } = PomanderUsageMode.All;
 
         // 避雷圈半径
         public float TrapAvoidRadius { get; set; } = 1.5f;
@@ -84,6 +98,26 @@ namespace AutoPalExplorer
 
         // 重新排队时间
         public int ChallengeIntervalSeconds { get; set; } = 10;
+
+        // ===== 存档槽位 =====
+        // 使用几号存档：0 = 1号存档(callback 0,0)，1 = 2号存档(callback 1,0)
+        public int SaveSlot { get; set; } = 0;
+
+        // ===== 轮次控制：打到指定层停止 + 多轮 =====
+        // 是否启用（关闭时保持原来的“无限连续刷本”行为）
+        public bool EnableRoundLimit { get; set; } = false;
+
+        // 起始层（决定进本时最后一个 SelectString 的选项索引）：1 / 21 / 31 / 51 / 71
+        public int StartFloor { get; set; } = 21;
+
+        // 停止层：30 / 50 / 70 / 100，打到该层出本后算“一轮”结束
+        public int StopFloor { get; set; } = 50;
+
+        // 要打几轮
+        public int RoundCount { get; set; } = 1;
+
+        // 每轮之间（删除存档后、重新排本前）等待秒数
+        public int RoundWaitSeconds { get; set; } = 15;
 
         // 魔陶器使用间隔
         public int PomanderIntervalSeconds { get; set; } = 5000;

@@ -556,6 +556,11 @@ namespace AutoPalExplorer
                 {
                     ImGui.TextUnformatted("再生位置: (未记录)");
                 }
+
+                ImGui.Spacing();
+                ImGui.Separator();
+
+                DrawExitDetectDebug();
             }
 
             ImGui.End();
@@ -710,6 +715,56 @@ namespace AutoPalExplorer
         private static string FormatVector3(Vector3 v)
         {
             return $"{v.X:F2}, {v.Y:F2}, {v.Z:F2}";
+        }
+
+        /// <summary>
+        /// 传送装置激活检测（DeepDungeonMap 图标 PartId）调试面板：
+        /// 显示最近一次节点扫描卡在哪一步，并提供 dump 节点树 / Addon 列表的按钮。
+        /// </summary>
+        private void DrawExitDetectDebug()
+        {
+            ImGui.TextUnformatted("传送装置检测（UI 节点）：");
+
+            var status = controller.ExitDetectStatus;
+            var ok = status.StartsWith("√") || status.StartsWith("已激活");
+            ImGui.PushStyleColor(ImGuiCol.Text, ok
+                ? new Vector4(0.2f, 1.0f, 0.2f, 1.0f)
+                : new Vector4(1.0f, 0.5f, 0.3f, 1.0f));
+            ImGui.TextWrapped(status);
+            ImGui.PopStyleColor();
+
+            if (controller.ExitDetectStatusAt != DateTime.MinValue)
+            {
+                var ago = DateTime.Now - controller.ExitDetectStatusAt;
+                ImGui.TextDisabled($"更新于 {controller.ExitDetectStatusAt:HH:mm:ss}（{ago.TotalSeconds:0.0}s 前）");
+            }
+
+            ImGui.TextDisabled("节点路径 DeepDungeonMap / Res 1 / Res 16 / Comp 18 / Image 2，PartId==10 视为已激活");
+            ImGui.TextDisabled($"最近读到的 PartId：{(controller.ExitDetectPartId < 0 ? "(未读到)" : controller.ExitDetectPartId.ToString())}");
+
+            if (ImGui.Button("立即检测一次"))
+                controller.PollExitActivation();
+
+            ImGui.SameLine();
+            if (ImGui.Button("Dump 节点树"))
+                controller.DumpExitMapNodeTree();
+
+            ImGui.SameLine();
+            if (ImGui.Button("列出已加载 Addon"))
+                controller.DumpLoadedAddonNames();
+
+            var dump = controller.ExitDebugDumpLines;
+            if (dump.Count > 0)
+            {
+                ImGui.TextDisabled($"Dump 结果（{dump.Count} 行，同时也写进了 /xllog）：");
+                if (ImGui.BeginChild("ExitNodeDump", new Vector2(0, 220), true,
+                        ImGuiWindowFlags.HorizontalScrollbar))
+                {
+                    foreach (var line in dump)
+                        ImGui.TextUnformatted(line);
+                    ImGui.EndChild();
+                }
+            }
         }
         
         private async Task TestOnlineConnectivityAsync()

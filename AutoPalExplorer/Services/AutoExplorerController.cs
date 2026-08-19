@@ -201,6 +201,15 @@ public sealed partial class AutoPalController
     private DateTime nextEntryConfirmFireAt = DateTime.MinValue; // SelectYesno 节流
     private readonly TaskManager entryTaskManager = new();
 
+    // ==== 队长判定缓存（见 IsPartyLeader）====
+    // 换图 / 出本回到入口地图的瞬间 partyList.Length 会短暂为 0，直接判定会把队员误当成单人去排本。
+    // 这里累计“小队列表连续为空”的时长，没超过阈值就沿用上一次判定。
+    private const double PartyListSettleSeconds = 15.0;
+    private bool lastIsPartyLeader = true;
+    private bool partyLeaderCacheValid = false;
+    private double partyEmptySeconds;                          // 连续读到空小队的累计秒数
+    private DateTime lastPartyCheckAt = DateTime.MinValue;      // 上一次判定时间（用于算增量）
+
     // 盲踩
     private readonly HashSet<long> ignoredBlindLocations = new();   // 当前层不再去踩的坐标
     public readonly List<Vector3> blindLocations = new();          // 当前层所有 Type=2 点
@@ -380,6 +389,11 @@ public sealed partial class AutoPalController
         // 地宫入口
         entrySubmitted = false;
         entryTaskManager.Abort();
+        // 队长判定缓存：重新开始时重新判定一次（并打印当前身份）
+        partyLeaderCacheValid = false;
+        partyEmptySeconds = 0.0;
+        lastPartyCheckAt = DateTime.MinValue;
+        lastIsPartyLeader = true;
         // 轮次控制：启用时首次进本即“重开一轮”（删旧存档 + 选起始层）
         completedRounds = 0;
         roundCounted = false;
@@ -445,6 +459,10 @@ public sealed partial class AutoPalController
             return;
         }
 
+        // 每帧刷新队长判定（排本 / 选存档只有队长做）。放在最前面是为了让
+        // “小队列表短暂为空”的空窗计时按真实帧走，而不是只在入口/排本那几帧才更新。
+        IsPartyLeader();
+
         // 0. 最高优先级：先看自己有没有死。死了就只处理复活确认，不执行任何其它逻辑。
         if (HandlePlayerDeath(player))
             return;
@@ -485,6 +503,7 @@ public sealed partial class AutoPalController
         // ===== 每帧状态维护（仅副作用，不接管本帧） =====
         HandleLevelChangeReset();            // 换层重置（nextLevelBool 触发）
         TickPomanderUsage();                 // 0.5 使用魔陶器
+        TickExitActivationFromAddon();       // 0.6 传送装置激活检测（DeepDungeonMap 图标 PartId）
 
         // ===== 优先级处理链：从高到低，任意一个接管本帧即 return =====
 

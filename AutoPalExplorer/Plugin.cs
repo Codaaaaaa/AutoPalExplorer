@@ -106,7 +106,7 @@ public sealed class Plugin : IDalamudPlugin
         // 每帧更新
         Framework.Update += OnFrameworkUpdate;
 
-        // 监听聊天，用于“传送装置已激活”
+        // 监听聊天：魔陶器 / 宝藏 / 层数等；传送装置激活以 UI 节点检测为主，这里的“传送装置启动了”只是兜底
         ChatGui.ChatMessage += OnChatMessage;
 
         // 可选：默认开启

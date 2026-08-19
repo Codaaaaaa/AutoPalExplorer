@@ -213,5 +213,6 @@ public sealed partial class AutoPalController
         savedRegenerationPos = null;
         exitActivatedByChat = false;
         regenerationActivated = false;
+        lastLoggedExitPartId = -1;
     }
 }

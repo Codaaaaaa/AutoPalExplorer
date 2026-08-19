@@ -165,12 +165,16 @@ public sealed partial class AutoPalController
         // 若点击失败（窗口还没出来）就等一会下一帧再试，直到 NotifyChallengeRequestSent 结束流程。
         TryConfirmBossQueueAddons();
 
-        // 车头模式非队长：到 WaitingRoom 也不主动互动“下一层入口”NPC 排本，只点确认窗口跟随队长
+        // 非队长：到 WaitingRoom 后原地站着不动，不去互动“下一层入口”NPC 排本，
+        // 只点掉队长排本弹给自己的确认窗口，等着被带进下一层。
         if (!IsPartyLeader())
         {
-            SetIntent("Boss层：非队长，等待队长排本（不主动互动NPC）");
+            if (navigator.IsBusy)
+                navigator.Stop();
+
+            SetIntent("Boss层：非队长，原地等待队长排本（不互动NPC）");
             if (config.devMode)
-                log.Information("[AutoPalExplorer] [Boss层] [Queue] 非队长：不主动互动下一层入口NPC，等待队长排本。");
+                log.Information("[AutoPalExplorer] [Boss层] [Queue] 非队长：原地等待，不互动下一层入口NPC。");
             return true;
         }
 
@@ -511,12 +515,17 @@ public sealed partial class AutoPalController
     /// </summary>
     private void HandleDungeonEntry(Vector3 pos)
     {
-        // 不是队长时：只检测存档、有存档就重置，但不排本（由队长排本带进本）
-        var isLeader = IsPartyLeader();
+        // 非队长：不排本、不选存档进本，只在「队长要重开一轮」时同步删掉自己的存档，
+        // 其余时间原地站着等队长把自己带进本。
+        if (!IsPartyLeader())
+        {
+            HandleNonLeaderEntry(pos);
+            return;
+        }
 
         // 轮次控制：回到入口时先判断是否“一轮打完”（打满轮数会直接 Stop）。仅队长驱动排本轮次。
         // 注意：每轮等待放在“删除存档之后”，由进本序列里的 EnqueueRoundWaitAfterDelete 处理，这里不再前置等待。
-        if (isLeader && config.EnableRoundLimit)
+        if (config.EnableRoundLimit)
         {
             HandleRoundTransitionAtEntrance();
             if (!IsRunning)
@@ -561,45 +570,110 @@ public sealed partial class AutoPalController
 
         // 停止导航后开始 UI 交互序列
         TryCommand("/vnav stop");
-        if (isLeader)
+        SetIntent("地宫入口：交互并处理进本菜单");
+        EnqueueEntrySequence(entryObj.GameObjectId);
+        if (config.devMode)
+            log.Information("[AutoPalExplorer] [入口] 已到入口附近，开始交互进本序列（队长）。");
+    }
+
+    /// <summary>
+    /// 入口地图上的队员（非队长）：
+    /// - 组队进本要求全队存档进度一致，所以队长删档重开的那一次，队员也必须把自己的存档删掉；
+    ///   删档时机跟队长的 <c>fresh</c> 条件完全一致（EnableRoundLimit &amp;&amp; startFreshRound），
+    ///   中途出本续打（如 StopFloor=50 时 30 层出来）双方都保留存档，谁都不能删。
+    /// - 除此之外全程不碰入口、不选存档、不排本，原地站着只点掉确认窗口，等队长带自己进本。
+    /// </summary>
+    private unsafe void HandleNonLeaderEntry(Vector3 pos)
+    {
+        // 队员也跟着算“这次回入口是不是要重开一轮”，好让删档时机和队长对齐。
+        // 只更新 startFreshRound，不计轮数、不 Stop —— 那是队长的事。
+        UpdateNonLeaderFreshRoundFlag();
+
+        if (entryTaskManager.IsBusy)
         {
-            SetIntent("地宫入口：交互并处理进本菜单");
-            EnqueueEntrySequence(entryObj.GameObjectId);
-            if (config.devMode)
-                log.Information("[AutoPalExplorer] [入口] 已到入口附近，开始交互进本序列（队长）。");
+            SetIntent("地宫入口：队员，正在重置自己的存档");
+            return;
         }
-        else
+
+        // 需要跟队长一起删档重开：走到入口交互一次，删完就关菜单，不排本
+        if (config.EnableRoundLimit && startFreshRound && !entrySubmitted)
         {
-            SetIntent("地宫入口：非队长，仅检查/重置存档，不排本");
+            var dist = (pos - EntryPoint).Length();
+            if (dist > EntryReachRadius)
+            {
+                SetIntent($"地宫入口：队员，接近入口准备删档（{dist:0.0} 格）");
+                var flyNow = DateTime.UtcNow;
+                if (flyNow >= nextEntryFlytoAt)
+                {
+                    TryCommand("/vnav moveto 424.2 89.4 -772.7");
+                    nextEntryFlytoAt = flyNow.AddSeconds(2);
+                }
+                return;
+            }
+
+            var entryObj = FindObjectByBaseId(EntryObjectBaseId);
+            if (entryObj is null)
+            {
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] [入口][队员] 已到入口附近，但未找到入口物件 (BaseId={BaseId})，等待。", EntryObjectBaseId);
+                return;
+            }
+
+            TryCommand("/vnav stop");
+            SetIntent("地宫入口：队员，删除自己的存档（与队长保持一致），不排本");
             EnqueueNonLeaderSaveCleanupSequence(entryObj.GameObjectId);
             if (config.devMode)
-                log.Information("[AutoPalExplorer] [入口] 非队长：仅检查/重置存档，不排本。");
+                log.Information("[AutoPalExplorer] [入口][队员] 队长要重开一轮，同步删除自己的存档。");
+            return;
+        }
+
+        // 其余情况：原地站着等队长排本，只点掉弹给自己的确认窗口
+        if (navigator.IsBusy)
+            navigator.Stop();
+
+        SetIntent("地宫入口：队员，原地等待队长排本");
+
+        var now = DateTime.UtcNow;
+        if (now >= nextEntryConfirmFireAt &&
+            TryGetAddonByName<AtkUnitBase>("SelectYesno", out var yn) && IsAddonReady(yn))
+        {
+            Callback.Fire(yn, true, 0);
+            nextEntryConfirmFireAt = now.AddSeconds(1.0); // 节流，避免对同一弹窗连点
+
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] [入口][队员] 点击 SelectYesno -> 0（跟随队长进本）。");
         }
     }
 
     /// <summary>
-    /// 是否为小队队长（单人视为队长）：非队长只检查/重置存档，不主动排本，由队长排本带进本。
-    /// 取不到队长信息时保守视为队长，避免误判导致完全不排本。
+    /// 队员侧的“重开一轮”判定：和 <see cref="HandleRoundTransitionAtEntrance"/> 用同一套依据
+    /// （层数来自聊天“第N朝圣路”，全队都能收到），但只更新 <see cref="startFreshRound"/>，
+    /// 不累加轮数、不播提示音、不 Stop。目的只有一个：让队员的删档时机和队长一模一样。
     /// </summary>
-    private bool IsPartyLeader()
+    private void UpdateNonLeaderFreshRoundFlag()
     {
-        if (partyList.Length == 0)
-            return true; // 单人 = 自己就是队长
+        if (!config.EnableRoundLimit)
+        {
+            startFreshRound = false;
+            return;
+        }
 
-        var leaderIndex = (int)partyList.PartyLeaderIndex;
-        if (leaderIndex < 0 || leaderIndex >= partyList.Length)
-            return true;
+        if (roundCounted)
+            return; // 本次入口访问已处理过
+        if (currentFloor <= 0 || currentFloor < config.StopFloor)
+            return; // 还没打到停止层（或只是中途出本续打），队长不会删档，队员也别删
 
-        var leader = partyList[leaderIndex];
-        if (leader == null)
-            return true;
+        roundCounted = true;
+        startFreshRound = true;
 
-        return leader.ContentId == Plugin.PlayerState.ContentId;
+        if (config.devMode)
+            log.Information("[AutoPalExplorer] [入口][队员] 打到第 {Floor} 层出本，队长会重开一轮，本次需要同步删档。", currentFloor);
     }
 
     /// <summary>
-    /// 车头模式非队长：交互入口 -> 打开存档界面 -> 检查目标存档槽 -> 有存档则删除 -> 关闭菜单。
+    /// 队员的存档清理：交互入口 -> 打开存档界面 -> 检查目标存档槽 -> 有存档则删除 -> 关闭菜单。
     /// 全程不选存档进本、不排本，等队长排本把自己带进去。
+    /// （队长删完档会等 RoundWaitSeconds 秒再排本，正好留给队员做完这一套。）
     /// </summary>
     private unsafe void EnqueueNonLeaderSaveCleanupSequence(ulong entryObjectId)
     {
@@ -618,7 +692,7 @@ public sealed partial class AutoPalController
             if (TryGetAddonByName<AtkUnitBase>("DeepDungeonSaveData", out var sd) && IsAddonReady(sd))
             {
                 saveSlotHasData = !IsSaveSlotEmpty(sd, slot);
-                log.Information("[AutoPalExplorer] [入口][非队长] 存档槽 {Slot} {State}。",
+                log.Information("[AutoPalExplorer] [入口][队员] 存档槽 {Slot} {State}。",
                     slot, saveSlotHasData ? "有存档，删除" : "为空，无需删除");
                 return true;
             }
@@ -636,10 +710,87 @@ public sealed partial class AutoPalController
         entryTaskManager.Enqueue(() =>
         {
             entrySubmitted = true; // 复用：本次入口已处理，等队长排本（离开入口地图会重置）
-            SetIntent("地宫入口：非队长已重置存档，等待队长排本");
-            log.Information("[AutoPalExplorer] [入口][非队长] 存档已处理，关闭菜单，等待队长排本。");
+            SetIntent("地宫入口：队员已重置存档，原地等待队长排本");
+            log.Information("[AutoPalExplorer] [入口][队员] 存档已处理，关闭菜单，等待队长排本。");
             return true;
         });
+    }
+
+    /// <summary>
+    /// 是否为小队队长（单人视为队长）：只有队长才排本 / 选存档，非队长一律原地等待被带进本。
+    ///
+    /// 判定带两层保护，因为直接读 partyList 在换图瞬间并不可靠：
+    /// 1) 换图 / 出本回到入口地图的那几帧里 partyList.Length 会短暂为 0，
+    ///    旧实现会把这一帧当成“单人 = 队长”，非队长就会自己去排本（本次修复的 bug）。
+    ///    这里累计“连续读到空小队”的时长，没超过 <see cref="PartyListSettleSeconds"/> 就沿用上一次判定。
+    /// 2) 队长身份用 ContentId / EntityId / 名字三种方式依次比对，
+    ///    避免某些场景下 ContentId 为 0 导致比不上。
+    /// </summary>
+    private bool IsPartyLeader()
+    {
+        var now = DateTime.UtcNow;
+        var dt = lastPartyCheckAt == DateTime.MinValue ? 0.0 : (now - lastPartyCheckAt).TotalSeconds;
+        lastPartyCheckAt = now;
+        // 两次判定间隔过大（切图读条、插件被暂停）时不计入空窗，
+        // 否则一次长加载就能把粘滞窗口耗光，又变回“队员自己去排本”。
+        if (dt < 0.0 || dt > 1.0)
+            dt = 0.0;
+
+        if (partyList.Length > 0)
+        {
+            partyEmptySeconds = 0.0;
+            UpdatePartyLeaderCache(ResolveIsPartyLeader());
+            return lastIsPartyLeader;
+        }
+
+        // 小队列表为空：可能真是单人，也可能只是换图/进本瞬间的空窗期。
+        // 之前判定过且空窗还没超时 -> 沿用上一次判定，别把队员误判成单人去排本。
+        partyEmptySeconds += dt;
+        if (partyLeaderCacheValid && partyEmptySeconds < PartyListSettleSeconds)
+            return lastIsPartyLeader;
+
+        UpdatePartyLeaderCache(true); // 真·单人
+        return true;
+    }
+
+    /// <summary>读当前 partyList 判断自己是不是队长；取不到队长信息时保守视为队长，避免完全不排本。</summary>
+    private bool ResolveIsPartyLeader()
+    {
+        var leaderIndex = (int)partyList.PartyLeaderIndex;
+        if (leaderIndex < 0 || leaderIndex >= partyList.Length)
+            return true;
+
+        var leader = partyList[leaderIndex];
+        if (leader == null)
+            return true;
+
+        // 1) ContentId：最可靠，但个别场景下会是 0
+        var myContentId = Plugin.PlayerState.ContentId;
+        if (leader.ContentId != 0 && myContentId != 0)
+            return leader.ContentId == myContentId;
+
+        // 2) EntityId：队长和自己同图时有效（入口地图 / 地宫内都满足）
+        var me = objectTable.LocalPlayer;
+        if (me is not null && leader.EntityId != 0 && me.EntityId != 0)
+            return leader.EntityId == me.EntityId;
+
+        // 3) 名字兜底
+        if (me is not null && !string.IsNullOrEmpty(leader.Name.TextValue))
+            return leader.Name.TextValue == me.Name.TextValue;
+
+        return true;
+    }
+
+    /// <summary>写入队长判定缓存，身份变化时打一条日志方便排查。</summary>
+    private void UpdatePartyLeaderCache(bool isLeader)
+    {
+        if (partyLeaderCacheValid && lastIsPartyLeader == isLeader)
+            return;
+
+        lastIsPartyLeader = isLeader;
+        partyLeaderCacheValid = true;
+        log.Information("[AutoPalExplorer] [队长] 当前身份：{Role}（小队人数={Count}）。",
+            isLeader ? "队长（负责排本）" : "队员（原地等待）", partyList.Length);
     }
 
     private unsafe void EnqueueEntrySequence(ulong entryObjectId)

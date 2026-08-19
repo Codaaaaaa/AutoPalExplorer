@@ -12,7 +12,8 @@ namespace AutoPalExplorer.Services;
 /// 识别：
 /// - 传送装置（同一个 DataId，由 ExitActivated 区分状态）
 /// - 宝箱
-/// ExitActivated 由插件在收到聊天“传送装置已激活”等日志时调用 MarkExitActivated() 标记。
+/// ExitActivated 由控制器标记：主要来源是 DeepDungeonMap 图标 PartId==10（见 AutoExplorerController.ExitActivation），
+/// 聊天“传送装置启动了”作为兜底，两者都走 MarkExitActivated()。
 /// </summary>
 public sealed class ExitDetector
 {
@@ -49,7 +50,7 @@ public sealed class ExitDetector
         if (!ExitActivated)
         {
             ExitActivated = true;
-            log.Information("[AutoPalExplorer] Exit marked as activated from chat log.");
+            log.Information("[AutoPalExplorer] Exit marked as activated.");
         }
     }
 

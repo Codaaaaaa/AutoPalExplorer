@@ -34,7 +34,9 @@ namespace AutoPalExplorer.Services;
 public sealed partial class AutoPalController
 {
     /// <summary>
-    /// 从插件 OnChatMessage 调用，当聊天出现“传送装置已激活”等信息时。
+    /// 标记传送装置已激活。
+    /// 主要由 TickExitActivationFromAddon（DeepDungeonMap 图标 PartId==10）调用，
+    /// 聊天“传送装置启动了”作为兜底也会调到这里。
     /// </summary>
     public void NotifyExitActivated()
     {

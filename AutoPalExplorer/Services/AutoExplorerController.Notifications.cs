@@ -58,6 +58,14 @@ public sealed partial class AutoPalController
             log.Information("[AutoPalExplorer] 收到埋藏的宝藏通知。");
     }
 
+    /// <summary>收到聊天“点亮了光耀烛台”：本层已互动过烛台，不再重复互动（换层重置）。</summary>
+    public void NotifyCandleLit()
+    {
+        hasLitCandle = true;
+        if (config.devMode)
+            log.Information("[AutoPalExplorer] 收到点亮光耀烛台通知，本层不再互动烛台。");
+    }
+
     public void nextLevelActivated()
     {
         nextLevelBool = true;
@@ -93,7 +101,6 @@ public sealed partial class AutoPalController
         hasOpenedNextPilgrimWindow = false;
         bossExitReachedAt = DateTime.MinValue;
         nextChallengeAttemptAt = DateTime.MinValue;
-        wasInCombatOnBossFloor = false;
 
         if (config.devMode)
             log.Information("[AutoPalExplorer] 检测到 Boss 层聊天提示，启用 Boss 房逻辑。");
@@ -107,7 +114,6 @@ public sealed partial class AutoPalController
         hasOpenedNextPilgrimWindow = false;
         bossExitReachedAt = DateTime.MinValue;
         nextChallengeAttemptAt = DateTime.MinValue;
-        wasInCombatOnBossFloor = false;
         // 地宫入口：申请已发出，结束入口 UI 流程
         entrySubmitted = true;
         entryTaskManager.Abort();
@@ -116,11 +122,6 @@ public sealed partial class AutoPalController
 
         if (config.devMode)
             log.Information("[AutoPalExplorer] 收到成功发送参加申请提示，结束 Boss 流程逻辑。");
-        
-        if (IsFollowMode && IsRunning)
-        {
-            StartFollowLoop();
-        }
     }
 
     /// <summary>

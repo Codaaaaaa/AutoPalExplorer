@@ -49,6 +49,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly bool isAllowed;
     // ⭐ 新增：UI 封装类
     private readonly ConfigWindow configWindow;
+    private readonly RoomMapWindow roomMapWindow;
 
     public Plugin()
     {
@@ -86,14 +87,15 @@ public sealed class Plugin : IDalamudPlugin
             TargetManager
         );
         // ⭐ 实例化配置窗口
-        configWindow = new ConfigWindow(config, controller, pomanderManager, PartyList);
+        roomMapWindow = new RoomMapWindow(controller, config);
+        configWindow = new ConfigWindow(config, controller, pomanderManager, PartyList, roomMapWindow);
 
         Log.Information("[AutoPalExplorer] Plugin loaded.");
 
         // 注册命令
         CommandManager.AddHandler(Command, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Explorer. /autopal [start|stop|toggle]"
+            HelpMessage = "Explorer. /autopal [start|stop|toggle|map]"
         });
 
         // 注册UI
@@ -144,6 +146,10 @@ public sealed class Plugin : IDalamudPlugin
                     configWindow.Open();
                     break;
 
+                case "map":
+                    roomMapWindow.Toggle();
+                    break;
+
                 case "toggle":
                 case "":
                     if (controller.IsRunning)
@@ -159,7 +165,7 @@ public sealed class Plugin : IDalamudPlugin
                     break;
 
                 default:
-                    ChatGui.Print("[AutoPalExplorer] Usage: /autopal [start|stop|toggle]");
+                    ChatGui.Print("[AutoPalExplorer] Usage: /autopal [start|stop|toggle|map]");
                     break;
             }
         }
@@ -202,6 +208,13 @@ public sealed class Plugin : IDalamudPlugin
                 Log.Information("发现了埋藏的宝藏");
             controller.NotifyBuriedtActivated();
             // pomanderManager.NotifyBuriedtBuff();
+        }
+
+        if (text.Contains("点亮了光耀烛台", StringComparison.OrdinalIgnoreCase))
+        {
+            if (config.devMode)
+                Log.Information("点亮了光耀烛台");
+            controller.NotifyCandleLit();
         }
 
         if (text.Contains("可以感知到宝藏埋藏的位置了", StringComparison.OrdinalIgnoreCase))
@@ -270,6 +283,7 @@ public sealed class Plugin : IDalamudPlugin
         if (isAllowed)
         {
             configWindow.Draw();
+            roomMapWindow.Draw();
         }
         else
         {

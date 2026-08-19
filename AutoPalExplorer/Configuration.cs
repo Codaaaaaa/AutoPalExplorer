@@ -3,11 +3,6 @@ using Dalamud.Plugin;
 
 namespace AutoPalExplorer
 {
-    public enum AutoMode
-    {
-        Explore = 0,
-        Follow = 1
-    }
     public enum BlindSyncMode
     {
         Local = 0,   // 本地模式：只在本机记 ignoredBlindLocations
@@ -23,8 +18,6 @@ namespace AutoPalExplorer
     public class Configuration : IPluginConfiguration
     {
         public int Version { get; set; } = 1;
-
-        public AutoMode Mode { get; set; } = AutoMode.Explore;
 
         // 原有
         public bool EnabledByDefault { get; set; } = false;
@@ -62,7 +55,7 @@ namespace AutoPalExplorer
         // 找怪范围
         public float EnemySearchRadius { get; set; } = 500.0f;
 
-        // ===== 车头模式：队友进战支援 =====
+        // ===== 队友进战支援 =====
         // 检测到队友进入战斗状态时，停止探索前去支援打怪
         public bool HelpPartyInCombat { get; set; } = true;
 
@@ -125,11 +118,24 @@ namespace AutoPalExplorer
         // 数据库路径
         public string PalacePalDbPath { get; set; } = "palace-pal.data.sqlite3";
 
-        // 盲踩目标最大允许距离
+        // 盲踩目标最大允许距离（只在没启用「按房间顺序盲踩」时生效）
         public float BlindMaxDistance { get; set; } = 25f;
 
-        // 跟随队伍成员
-        public int FollowPartyIndex { get; set; } = 1;
+        // ===== 房间图（读游戏内 InstanceContentDeepDungeon.MapData 的 5x5 房间网格）=====
+
+        // 总开关：关掉之后所有房间相关功能都回退到原来的贴墙 / 最近点行为
+        public bool UseRoomGraph { get; set; } = true;
+
+        // 用房间图做探索（替代贴墙探索）；房间图没标定好时仍会自动回退贴墙
+        public bool RoomExplore { get; set; } = true;
+
+        // 盲踩按房间顺序推进：先搜完当前房间，再按最短路去下一个房间
+        public bool BlindRoomOrder { get; set; } = true;
+
+        // 各地图学到的房间间距（米），由插件自动标定并记忆，一般不用手动改
+        public Dictionary<uint, float> RoomGridPitchX { get; set; } = new();
+        public Dictionary<uint, float> RoomGridPitchZ { get; set; } = new();
+
         public BlindSyncMode BlindSyncMode { get; set; } = BlindSyncMode.Local;
 
         // 联机服务器地址，支持自定义

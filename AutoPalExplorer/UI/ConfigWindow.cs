@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Numerics;
 using System.Net.Http;
 using System.Text.Json;
@@ -26,18 +26,20 @@ namespace AutoPalExplorer
         private readonly AutoPalController controller;
         private readonly PomanderManager pomanderManager;
         private readonly IPartyList partyList;
+        private readonly RoomMapWindow roomMapWindow;
         private bool isVisible = false;
         private IDalamudTextureWrap? logoTexture;
         private bool logoLoadStarted = false;   
         private string? logoError;
         private bool testingOnline = false;
         private string onlineTestResult = string.Empty;
-        public ConfigWindow(Configuration config, AutoPalController controller, PomanderManager pomanderManager, IPartyList partyList)
+        public ConfigWindow(Configuration config, AutoPalController controller, PomanderManager pomanderManager, IPartyList partyList, RoomMapWindow roomMapWindow)
         {
             this.config = config;
             this.controller = controller;
             this.pomanderManager = pomanderManager;
             this.partyList = partyList;
+            this.roomMapWindow = roomMapWindow;
         }
 
         public void Toggle()
@@ -86,16 +88,6 @@ namespace AutoPalExplorer
             }
             
             ImGui.Separator();
-            ImGui.TextUnformatted("模式设置:");
-
-            int modeIndex = (int)config.Mode;
-            string[] modeLabels = { "车头模式", "跟车模式" };
-            if (ImGui.Combo("自动化模式", ref modeIndex, modeLabels, modeLabels.Length))
-            {
-                config.Mode = (AutoMode)modeIndex;
-                config.Save();
-            }
-
 
             bool usingPomander = config.UsingPomander;
             if (ImGui.Checkbox("使用魔陶器", ref usingPomander))
@@ -116,8 +108,6 @@ namespace AutoPalExplorer
             }
             ImGui.EndDisabled();
             ImGui.Unindent();
-
-            DrawFollowConfig();
 
             DrawRoundConfig();
 
@@ -169,6 +159,45 @@ namespace AutoPalExplorer
                 config.BlindChestsWithTrap = blindChestsWithTrap;
                 config.Save();
             }
+            ImGui.EndDisabled();
+            ImGui.Unindent();
+
+            ImGui.Separator();
+            ImGui.TextUnformatted("房间图（读游戏内地图数据，5x5 房间网格）:");
+
+            bool useRoomGraph = config.UseRoomGraph;
+            if (ImGui.Checkbox("启用房间图", ref useRoomGraph))
+            {
+                config.UseRoomGraph = useRoomGraph;
+                config.Save();
+            }
+            ImGui.SameLine();
+            if (ImGui.SmallButton(roomMapWindow.IsVisible ? "关闭房间地图" : "打开房间地图"))
+                roomMapWindow.Toggle();
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("关掉之后所有房间相关功能都回退到原来的贴墙 / 最近点行为。");
+
+            ImGui.Indent();
+            ImGui.BeginDisabled(!useRoomGraph);
+
+            bool roomExplore = config.RoomExplore;
+            if (ImGui.Checkbox("用房间图探索（替代贴墙）", ref roomExplore))
+            {
+                config.RoomExplore = roomExplore;
+                config.Save();
+            }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("按最短路去最近的没踩过的房间，优先有宝箱的房间；\n全层踩完后直接去传送装置所在房间。\n房间中心还没标定好时会自动退回贴墙。");
+
+            bool blindRoomOrder = config.BlindRoomOrder;
+            if (ImGui.Checkbox("盲踩按房间顺序推进", ref blindRoomOrder))
+            {
+                config.BlindRoomOrder = blindRoomOrder;
+                config.Save();
+            }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("先把当前房间的候选点搜完，再按最短路去下一个房间。\n启用时不再受「盲踩目标最大允许距离」限制。");
+
             ImGui.EndDisabled();
             ImGui.Unindent();
 
@@ -441,6 +470,33 @@ namespace AutoPalExplorer
                 {
                     var ago = DateTime.Now - controller.LastIntentAt;
                     ImGui.TextDisabled($"更新于 {controller.LastIntentAt:HH:mm:ss}（{ago.TotalSeconds:0.0}s 前）");
+                }
+
+                ImGui.Spacing();
+                ImGui.Separator();
+
+                // === 房间图状态 ===
+                ImGui.TextUnformatted("房间图：");
+                if (!config.UseRoomGraph)
+                {
+                    ImGui.TextDisabled("(已关闭)");
+                }
+                else if (!controller.RoomCentersCalibrated)
+                {
+                    ImGui.TextDisabled("(未标定 / 不在深层迷宫)");
+                }
+                else
+                {
+                    var progress = controller.RoomProgress;
+                    ImGui.TextUnformatted($"当前房间 {controller.CurrentRoomIndex}"
+                        + (controller.CurrentRoomIndex >= 0
+                            ? $"（行 {controller.CurrentRoomIndex / 5} 列 {controller.CurrentRoomIndex % 5}）"
+                            : string.Empty));
+                    ImGui.TextUnformatted($"已探索 {progress.Revealed} / {progress.Exists} 个房间");
+                    ImGui.TextUnformatted($"目标房间 {controller.RoomExploreTarget}（{controller.RoomGoal}）");
+                    ImGui.TextUnformatted($"房间间距 X={controller.RoomPitchX:0.0} Z={controller.RoomPitchZ:0.0}"
+                        + (controller.RoomPitchSolved ? "（本层实测）" : "（沿用先验）"));
+                    ImGui.TextDisabled($"标定样本房间数 {controller.RoomObservedCount}");
                 }
 
                 ImGui.Spacing();
@@ -782,36 +838,5 @@ namespace AutoPalExplorer
             ImGui.Unindent();
         }
 
-        private void DrawFollowConfig()
-        {
-            ImGui.Separator();
-            ImGui.TextUnformatted("跟车模式设置");
-
-            if (partyList.Length == 0)
-            {
-                ImGui.TextDisabled("当前没有队友（不在队伍中）。");
-                return;
-            }
-
-            var names = new List<string>();
-            for (var i = 0; i < partyList.Length; i++)
-            {
-                var m = partyList[i];
-                var name = m.Name.TextValue;
-                names.Add($"{i + 1}. {name}");
-            }
-
-            var currentIndex = config.FollowPartyIndex;
-            if (currentIndex < 0 || currentIndex >= names.Count)
-                currentIndex = 0;
-
-            if (ImGui.Combo("跟随队友", ref currentIndex, names.ToArray(), names.Count))
-            {
-                config.FollowPartyIndex = currentIndex;
-                config.Save();
-            }
-
-            ImGui.TextDisabled("Start 时会尝试选中该队友，若选中失败则自动 Stop。");
-        }
     }
 }

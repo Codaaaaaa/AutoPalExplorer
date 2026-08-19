@@ -41,6 +41,7 @@ public sealed partial class AutoPalController
 
         nextLevelBool = false;
         lastTerritoryType = clientState.TerritoryType;
+        hasLitCandle = false; // 换层重置：新一层可以再互动光耀烛台
         pomanderManager.ResetBuff();
         wallFollower.Reset();
         exitDetector.Reset();
@@ -53,11 +54,9 @@ public sealed partial class AutoPalController
         lastChestInteractObjectId = 0;
         ResetBlindWalkState();
         ResetStaticObjectsState();
+        ResetRoomState();         // 房间图：上一层的标定 / 目标 / 拉黑名单全部作废
         ResetFloorSpecialState(); // 99/100 层收尾状态（不清 currentFloor，那是聊天设置的）
         ClearLockedChest();
-
-        // 跟车
-        wasInCombatOnBossFloor = false;
 
         if (config.devMode)
             log.Information("[AutoPalExplorer] 检测到换层，已重置状态 (Territory={Territory}).", clientState.TerritoryType);
@@ -72,38 +71,11 @@ public sealed partial class AutoPalController
         floor100InteractedAt = DateTime.MinValue;
     }
 
-    /// <summary>0.5 检测状态并使用魔陶器（跟车模式 / Boss 层不使用）。</summary>
+    /// <summary>0.5 检测状态并使用魔陶器（Boss 层 / 排队中不使用）。</summary>
     private void TickPomanderUsage()
     {
-        if (IsFollowMode)
-            return; // 跟车模式不使用魔陶器
-
         if (!isBossFloor && !isBossFloorQueueing && config.UsingPomander)
             pomanderManager.UsingPomander();
-    }
-
-    /// <summary>跟车模式 Boss 层：进战开 BMRAI，脱战关 BMRAI/Rotation。仅副作用，不接管本帧。</summary>
-    private void UpdateFollowModeBossBmrai(bool inCombat)
-    {
-        if (!(IsFollowMode && isBossFloor))
-            return;
-
-        if (inCombat)
-        {
-            // Boss 战中
-            EnsureBmraiOn();
-            wasInCombatOnBossFloor = true;
-        }
-        else if (wasInCombatOnBossFloor)
-        {
-            // 刚刚从 Boss 战中脱战：关闭 BMRAI/Rotation
-            wasInCombatOnBossFloor = false;
-            EnsureBmraiOff();
-            EnsureRotationOff();
-
-            if (config.devMode)
-                log.Information("[AutoPalExplorer] 跟车模式：Boss 战结束，已关闭 BMRAI 和 Rotation。");
-        }
     }
 
     /// <summary>
@@ -118,7 +90,6 @@ public sealed partial class AutoPalController
             if (config.devMode)
                 log.Information("[AutoPalExplorer] 当前处于战斗中，交给 BMRAI 处理移动/战斗。");
 
-            // 非跟车模式：按原逻辑自动开 BMRAI
             if (!bmraiOn)
                 EnsureBmraiOn();
 
@@ -129,7 +100,6 @@ public sealed partial class AutoPalController
             return true;
         }
 
-        // 非跟车模式：按原逻辑离战斗就关 BMRAI
         if (bmraiOn)
         {
             if (config.devMode)
@@ -139,26 +109,14 @@ public sealed partial class AutoPalController
             // 导致脱战后 Rotation 仍在运行。这里补一刀，脱战时一并关闭。
             EnsureRotationOff();
         }
-        // 跟车模式：BMRAI 的开关由 StartFollowLoop / Boss 战结束那段逻辑控制，这里不动
+
         return false;
-    }
-
-    /// <summary>跟车模式：非 Boss 楼层不执行任何探索逻辑，直接待命。</summary>
-    private bool HandleFollowModeIdle()
-    {
-        if (!(IsFollowMode && !isBossFloor && !isBossFloorQueueing))
-            return false;
-
-        SetIntent("跟车模式：非 Boss 楼层待命");
-        if (config.devMode)
-            log.Information("[AutoPalExplorer] 跟车模式：非 Boss 楼层，跳过自动探索逻辑。");
-        return true;
     }
 
     /// <summary>
     /// Boss 房阶段调度：
     /// - 1.1 进入 Boss 房（未排队）：交给 HandleBossFloor 打 Boss / 找出口；
-    /// - 1.2 已传送出、正在排队“挑战下一朝圣路”：车头模式交给 HandleBossFloorQueueing，跟车模式原地等待。
+    /// - 1.2 已传送出、正在排队“挑战下一朝圣路”：交给 HandleBossFloorQueueing（内部只有队长真正排本）。
     /// </summary>
     private bool HandleBossFloorPhase(Vector3 pos)
     {
@@ -175,19 +133,8 @@ public sealed partial class AutoPalController
             pomanderManager.ResetBuff();
             pomanderManager.ResetBuriedBuff();
 
-            if (!IsFollowMode)
-            {
-                // 原来的自动排队行为
-                if (HandleBossFloorQueueing(pos))
-                    return true;
-            }
-            else
-            {
-                // 跟车模式：Queue 楼层什么都不做，等聊天出现“成功发送了参加申请”
-                if (config.devMode)
-                    log.Information("[AutoPalExplorer] [Boss层] [Queue] 跟车模式：暂停所有排队逻辑，等待参加申请结果。");
+            if (HandleBossFloorQueueing(pos))
                 return true;
-            }
         }
 
         return false;
@@ -265,6 +212,10 @@ public sealed partial class AutoPalController
     /// </summary>
     private bool HandleRadiantCandlestand(Vector3 pos, Vector3? currentTarget, float maxDistance)
     {
+        // 本层已点亮过烛台（聊天“点亮了光耀烛台”）就不再互动，交回后续逻辑；换层会重置 hasLitCandle
+        if (hasLitCandle)
+            return false;
+
         // 找最近的、在 maxDistance 内的烛台对象
         IGameObject? candle = null;
         var bestDistSq = maxDistance * maxDistance;

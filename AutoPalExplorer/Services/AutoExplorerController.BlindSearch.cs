@@ -43,6 +43,7 @@ public sealed partial class AutoPalController
         blindArrivedAt = DateTime.MinValue;
         blindLastProgressPos = Vector3.Zero;
         blindLastProgressCheckAt = DateTime.MinValue;
+        blindByRoomDirty = true;
 
         // 丢弃任何进行中/未处理的预定结果，避免跨层残留。
         // 自增世代号：让已在路上的后台请求完成时校验失败，从而不再写回状态位。
@@ -68,6 +69,7 @@ public sealed partial class AutoPalController
 
         blindLocations.Clear();
         allBlindLocations.Clear();
+        blindByRoomDirty = true;
         blindLocationsTerritory = territory;
         currentBlindTarget = null;
         blindArrivedAt = DateTime.MinValue;
@@ -205,8 +207,16 @@ public sealed partial class AutoPalController
         }
     }
 
+    /// <summary>
+    /// 选下一个盲踩点。
+    /// 优先走房间图：按最短路一个房间一个房间地搜完，避免在全图范围内反复横跳；
+    /// 房间图不可用（未标定 / 关闭）时退回原来的「取 maxDistance 内最近的一个点」。
+    /// </summary>
     private Vector3? GetNextBlindLocation(Vector3 from, float maxDistance)
     {
+        if (TryGetNextBlindLocationByRoom(from, out var byRoom))
+            return byRoom;
+
         Vector3? best = null;
         var maxDistSq = maxDistance * maxDistance;
         var bestDistSq = maxDistSq;

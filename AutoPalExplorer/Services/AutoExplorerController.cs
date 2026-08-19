@@ -115,7 +115,6 @@ public sealed partial class AutoPalController
     private bool roundCounted;                          // 本次回到入口是否已计过一轮（防止重复计数）
     private bool saveSlotHasData;                       // 进本时读到的：目标存档槽里是否有存档
     private int entryStartFloorIndex;                   // 本次进本序列最终 SelectString 要选的层索引
-    private DateTime roundWaitUntil = DateTime.MinValue; // 删档后重新排本前的等待门
     private float EnemySearchRadius => MathF.Max(1.0f, config.EnemySearchRadius);
     // 车头支援：到进战队友多近算“到位”
     private float HelpPartyArriveRadius => MathF.Max(0.5f, config.HelpPartyArriveRadius);
@@ -131,6 +130,8 @@ public sealed partial class AutoPalController
 
     // 光耀烛台：≤此距离(米)时抢在宝箱前优先互动，否则等到所有宝箱之后再处理
     private float RadiantCandlestandNearRange => MathF.Max(0f, config.RadiantCandlestandNearRange);
+    // 本层是否已点亮过光耀烛台（收到聊天“点亮了光耀烛台”后置真），换层重置，避免重复互动
+    private bool hasLitCandle;
 
     // 移动速度检测：读条技能必须站定才放，否则移动会打断读条
     private Vector3 lastMovePos;
@@ -189,10 +190,6 @@ public sealed partial class AutoPalController
     private ulong lockedChestId = 0;
     private Vector3 lockedChestPos = Vector3.Zero;
     private const float LockedChestGiveUpDistance = 100.0f;
-
-    // 跟车模式
-    private bool wasInCombatOnBossFloor = false;
-    private bool IsFollowMode => config.Mode == AutoMode.Follow;
 
     // ==== 地宫入口自动化（terr 816，只有车头模式运行）====
     private const uint EntryTerritory = 816;
@@ -374,12 +371,12 @@ public sealed partial class AutoPalController
         bossExitReachedAt = DateTime.MinValue;
         ResetBlindWalkState();
         ResetStaticObjectsState();
+        ResetRoomState();
         ClearLockedChest();
         // 99/100 层特殊流程
         currentFloor = 0;
+        hasLitCandle = false;
         ResetFloorSpecialState();
-        // 跟车
-        wasInCombatOnBossFloor = false;
         // 地宫入口
         entrySubmitted = false;
         entryTaskManager.Abort();
@@ -388,13 +385,7 @@ public sealed partial class AutoPalController
         roundCounted = false;
         saveSlotHasData = false;
         entryStartFloorIndex = 0;
-        roundWaitUntil = DateTime.MinValue;
         startFreshRound = config.EnableRoundLimit;
-
-        if (IsFollowMode)
-        {
-            StartFollowLoop();
-        }
 
         if (config.devMode)
             log.Information("[AutoPalExplorer] 已启动，当前地城 Territory={TerritoryType}。", clientState.TerritoryType);
@@ -420,18 +411,17 @@ public sealed partial class AutoPalController
         bossExitReachedAt = DateTime.MinValue;
         ResetBlindWalkState();
         ResetStaticObjectsState();
+        ResetRoomState();
         ClearLockedChest();
         // 99/100 层特殊流程
         currentFloor = 0;
+        hasLitCandle = false;
         ResetFloorSpecialState();
-        // 跟车
-        wasInCombatOnBossFloor = false;
         // 地宫入口
         entryTaskManager.Abort();
         // 轮次控制
         startFreshRound = false;
         roundCounted = false;
-        roundWaitUntil = DateTime.MinValue;
 
         if (config.devMode)
             log.Information("[AutoPalExplorer] 已停止。");
@@ -490,11 +480,11 @@ public sealed partial class AutoPalController
         }
 
         UpdateStaticObjectPositions();
+        TickRoomState(player, pos);          // 房间图：换层检测 + 房间中心在线标定
 
         // ===== 每帧状态维护（仅副作用，不接管本帧） =====
         HandleLevelChangeReset();            // 换层重置（nextLevelBool 触发）
         TickPomanderUsage();                 // 0.5 使用魔陶器
-        UpdateFollowModeBossBmrai(inCombat); // 跟车模式 Boss 战 BMRAI 开关
 
         // ===== 优先级处理链：从高到低，任意一个接管本帧即 return =====
 
@@ -504,10 +494,6 @@ public sealed partial class AutoPalController
 
         // 1. 本地进战：交给 BMRAI 并暂停导航（脱战则关 BMRAI 后继续往下）
         if (HandleCombat(inCombat))
-            return;
-
-        // 跟车模式：非 Boss 楼层不探索，直接待命
-        if (HandleFollowModeIdle())
             return;
 
         // Boss 房 / 排队“挑战下一朝圣路”
@@ -533,19 +519,19 @@ public sealed partial class AutoPalController
 
         // 3. 探索优先级决策（命中即接管本帧）
         if (HandleRegenerationAltar(pos, currentTarget)) return;                       // 2.1 再生祭坛（复活阵亡队友）
-        if (!IsFollowMode && TryHelpPartyInCombat(pos, player, currentTarget)) return; // 2.2 车头模式支援队友
-        // 光耀烛台互动暂时禁用（需要时取消注释这两行即可恢复）
-        // if (HandleRadiantCandlestand(pos, currentTarget, RadiantCandlestandNearRange)) return; // 2.3 光耀烛台（≤30m 抢在宝箱前）
+        if (TryHelpPartyInCombat(pos, player, currentTarget)) return;                   // 2.2 支援进战的队友
+        if (HandleRadiantCandlestand(pos, currentTarget, RadiantCandlestandNearRange)) return; // 2.3 光耀烛台（≤30m 抢在宝箱前）
         if (HandleBuriedChest(pos, currentTarget)) return;                             // 3.0 埋藏的宝藏
         if (HandleBlindBuriedSearch(pos)) return;                                      // 3.0b 盲踩埋藏宝藏
         if (HandleLockedChestPriority(pos, currentTarget)) return;                     // 3.0c 锁定中的普通宝箱
         if (HandleNormalChest(pos, currentTarget)) return;                             // 3.1 普通宝箱
-        // if (HandleRadiantCandlestand(pos, currentTarget, float.MaxValue)) return;      // 3.1b 光耀烛台（宝箱之后，任意距离）
+        if (HandleRadiantCandlestand(pos, currentTarget, float.MaxValue)) return;      // 3.1b 光耀烛台（宝箱之后，任意距离）
         if (HandleActiveExit(pos, currentTarget)) return;                              // 3.2 激活的传送装置
         if (HandleNearestEnemy(pos, player, currentTarget)) return;                    // 3.3 最近怪物
 
-        // 3.4 都没有更高优先级：靠墙探索
-        HandleWallFollow();
+        // 3.4 都没有更高优先级：按房间图探索；房间图不可用时才退回贴墙
+        if (!HandleRoomExplore(pos))
+            HandleWallFollow();
     }
 
     // ===== 本类按职责拆分为多个 partial 文件（同一个类，见 AutoExplorerController.*.cs） =====
@@ -554,6 +540,7 @@ public sealed partial class AutoPalController
     //   .Chests        – 宝箱开启 / 锁定 / 查找
     //   .Combat        – 找怪、开怪、支援进战队友
     //   .Navigation    – 导航、避陷阱、物件交互、静态物件坐标
+    //   .Rooms         – 房间图探索 / 房间中心标定 / 按房间顺序盲踩
     //   .BlindSearch   – 盲踩埋藏宝藏（PalacePal 数据）
     //   .Online        – 联机盲踩同步（HTTP）
     //   .Commands      – BMRAI / 游戏指令 / 跟随

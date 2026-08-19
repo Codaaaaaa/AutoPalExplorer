@@ -165,6 +165,15 @@ public sealed partial class AutoPalController
         // 若点击失败（窗口还没出来）就等一会下一帧再试，直到 NotifyChallengeRequestSent 结束流程。
         TryConfirmBossQueueAddons();
 
+        // 车头模式非队长：到 WaitingRoom 也不主动互动“下一层入口”NPC 排本，只点确认窗口跟随队长
+        if (!IsPartyLeader())
+        {
+            SetIntent("Boss层：非队长，等待队长排本（不主动互动NPC）");
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] [Boss层] [Queue] 非队长：不主动互动下一层入口NPC，等待队长排本。");
+            return true;
+        }
+
         var npc = FindObjectByBaseId(ObjectIds.NextPilgrimNpcBaseId);
         if (npc is not null)
         {
@@ -498,26 +507,20 @@ public sealed partial class AutoPalController
     /// 4. DeepDungeonSaveData -> callback(0,0)；
     /// 5. SelectString -> 选 0；
     /// 6. 之后不断 SelectYesno 选 0，直到出现 SelectString 再选 0，进入地宫。
-    /// 只有车头模式运行；收到“成功发送了参加申请”后结束。
+    /// 收到“成功发送了参加申请”后结束。
     /// </summary>
     private void HandleDungeonEntry(Vector3 pos)
     {
-        if (IsFollowMode)
-            return; // 只有车头模式自动进本
+        // 不是队长时：只检测存档、有存档就重置，但不排本（由队长排本带进本）
+        var isLeader = IsPartyLeader();
 
-        // 轮次控制：回到入口时先判断是否“一轮打完”（打满轮数会直接 Stop）
-        if (config.EnableRoundLimit)
+        // 轮次控制：回到入口时先判断是否“一轮打完”（打满轮数会直接 Stop）。仅队长驱动排本轮次。
+        // 注意：每轮等待放在“删除存档之后”，由进本序列里的 EnqueueRoundWaitAfterDelete 处理，这里不再前置等待。
+        if (isLeader && config.EnableRoundLimit)
         {
             HandleRoundTransitionAtEntrance();
             if (!IsRunning)
                 return; // 打满轮数，已 Stop
-
-            if (DateTime.UtcNow < roundWaitUntil)
-            {
-                var remain = (roundWaitUntil - DateTime.UtcNow).TotalSeconds;
-                SetIntent($"轮次：删档后等待 {remain:0.0}s 再重新排本");
-                return; // 等待期间不进本
-            }
         }
 
         if (entrySubmitted)
@@ -557,12 +560,86 @@ public sealed partial class AutoPalController
         }
 
         // 停止导航后开始 UI 交互序列
-        SetIntent("地宫入口：交互并处理进本菜单");
         TryCommand("/vnav stop");
-        EnqueueEntrySequence(entryObj.GameObjectId);
+        if (isLeader)
+        {
+            SetIntent("地宫入口：交互并处理进本菜单");
+            EnqueueEntrySequence(entryObj.GameObjectId);
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] [入口] 已到入口附近，开始交互进本序列（队长）。");
+        }
+        else
+        {
+            SetIntent("地宫入口：非队长，仅检查/重置存档，不排本");
+            EnqueueNonLeaderSaveCleanupSequence(entryObj.GameObjectId);
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] [入口] 非队长：仅检查/重置存档，不排本。");
+        }
+    }
 
-        if (config.devMode)
-            log.Information("[AutoPalExplorer] [入口] 已到入口附近，开始交互进本序列。");
+    /// <summary>
+    /// 是否为小队队长（单人视为队长）：非队长只检查/重置存档，不主动排本，由队长排本带进本。
+    /// 取不到队长信息时保守视为队长，避免误判导致完全不排本。
+    /// </summary>
+    private bool IsPartyLeader()
+    {
+        if (partyList.Length == 0)
+            return true; // 单人 = 自己就是队长
+
+        var leaderIndex = (int)partyList.PartyLeaderIndex;
+        if (leaderIndex < 0 || leaderIndex >= partyList.Length)
+            return true;
+
+        var leader = partyList[leaderIndex];
+        if (leader == null)
+            return true;
+
+        return leader.ContentId == Plugin.PlayerState.ContentId;
+    }
+
+    /// <summary>
+    /// 车头模式非队长：交互入口 -> 打开存档界面 -> 检查目标存档槽 -> 有存档则删除 -> 关闭菜单。
+    /// 全程不选存档进本、不排本，等队长排本把自己带进去。
+    /// </summary>
+    private unsafe void EnqueueNonLeaderSaveCleanupSequence(ulong entryObjectId)
+    {
+        var slot = SaveSlotIndex;
+
+        // 1. 交互入口物件 -> DeepDungeonMenu -> callback(0) 打开存档界面
+        entryTaskManager.Enqueue(() => InteractEntryObject(entryObjectId));
+        EnqueueWaitAddon("DeepDungeonMenu");
+        EnqueueFireAddon("DeepDungeonMenu", 0);
+        EnqueueWaitAddon("DeepDungeonSaveData");
+
+        // 2. 检查目标存档槽是否有存档
+        saveSlotHasData = false;
+        entryTaskManager.Enqueue(() =>
+        {
+            if (TryGetAddonByName<AtkUnitBase>("DeepDungeonSaveData", out var sd) && IsAddonReady(sd))
+            {
+                saveSlotHasData = !IsSaveSlotEmpty(sd, slot);
+                log.Information("[AutoPalExplorer] [入口][非队长] 存档槽 {Slot} {State}。",
+                    slot, saveSlotHasData ? "有存档，删除" : "为空，无需删除");
+                return true;
+            }
+            return false;
+        });
+
+        // 3. 有存档则删除（删完 saveSlotHasData 为真时会重开 savedata；为空则 savedata 仍开着）
+        EnqueueDeleteSaveIfNeeded(slot);
+
+        // 4. 关闭：savedata -1 回菜单，再 menu -1 关闭；标记本次入口已处理，不排本
+        EnqueueWaitAddon("DeepDungeonSaveData");
+        EnqueueFireAddon("DeepDungeonSaveData", -1);
+        EnqueueWaitAddon("DeepDungeonMenu");
+        EnqueueFireAddon("DeepDungeonMenu", -1);
+        entryTaskManager.Enqueue(() =>
+        {
+            entrySubmitted = true; // 复用：本次入口已处理，等队长排本（离开入口地图会重置）
+            SetIntent("地宫入口：非队长已重置存档，等待队长排本");
+            log.Information("[AutoPalExplorer] [入口][非队长] 存档已处理，关闭菜单，等待队长排本。");
+            return true;
+        });
     }
 
     private unsafe void EnqueueEntrySequence(ulong entryObjectId)
@@ -603,6 +680,8 @@ public sealed partial class AutoPalController
                 return true;
             });
             EnqueueDeleteSaveIfNeeded(slot);
+            // 删除存档之后再等待 RoundWaitSeconds（仅本轮确实删了存档时才等），然后继续排本
+            EnqueueRoundWaitAfterDelete();
         }
 
         // 4. DeepDungeonSaveData -> callback(slot, second)：second = 有存档?1(继续):0(从头开始)
@@ -696,6 +775,18 @@ public sealed partial class AutoPalController
         EnqueueDeleteStepDelay();
         EnqueueWaitIfHasData("DeepDungeonSaveData");
     }
+
+    /// <summary>删除存档之后的每轮等待（仅当本轮确实删了存档时才等 RoundWaitSeconds）。</summary>
+    private void EnqueueRoundWaitAfterDelete()
+        => entryTaskManager.Enqueue(() =>
+        {
+            if (saveSlotHasData && config.RoundWaitSeconds > 0)
+            {
+                log.Information("[AutoPalExplorer] [入口][轮次] 删档完成，等待 {Sec}s 后重新排本。", config.RoundWaitSeconds);
+                entryTaskManager.InsertDelay(config.RoundWaitSeconds * 1000);
+            }
+            return true;
+        });
 
     /// <summary>删档流程步骤间的观察延迟（仅在有存档、真正走删档分支时才延迟）。</summary>
     private void EnqueueDeleteStepDelay()
@@ -849,13 +940,11 @@ public sealed partial class AutoPalController
             return;
         }
 
-        // 还有轮次：下一轮重开（删存档 + 选起始层），先等 RoundWaitSeconds 秒再排本
+        // 还有轮次：下一轮重开（删存档 -> 等待 RoundWaitSeconds -> 选起始层排本）
         startFreshRound = true;
         entrySubmitted = false;
         entryTaskManager.Abort();
-        var wait = Math.Max(0, config.RoundWaitSeconds);
-        roundWaitUntil = DateTime.UtcNow.AddSeconds(wait);
-        SetIntent($"轮次：第 {completedRounds}/{total} 轮完成，{wait}s 后重开");
+        SetIntent($"轮次：第 {completedRounds}/{total} 轮完成，重开下一轮（删档后等待 {config.RoundWaitSeconds}s）");
     }
 
     /// <summary>全部轮次打完：聊天通知 + 播放提示音。</summary>

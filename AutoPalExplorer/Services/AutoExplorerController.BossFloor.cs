@@ -525,7 +525,8 @@ public sealed partial class AutoPalController
 
         // 轮次控制：回到入口时先判断是否“一轮打完”（打满轮数会直接 Stop）。仅队长驱动排本轮次。
         // 注意：每轮等待放在“删除存档之后”，由进本序列里的 EnqueueRoundWaitAfterDelete 处理，这里不再前置等待。
-        if (config.EnableRoundLimit)
+        // 财运亨通模式永远续打同一个存档，不走删档 / 轮次那一套
+        if (config.EnableRoundLimit && !config.FortuneMode)
         {
             HandleRoundTransitionAtEntrance();
             if (!IsRunning)
@@ -596,7 +597,7 @@ public sealed partial class AutoPalController
         }
 
         // 需要跟队长一起删档重开：走到入口交互一次，删完就关菜单，不排本
-        if (config.EnableRoundLimit && startFreshRound && !entrySubmitted)
+        if (config.EnableRoundLimit && !config.FortuneMode && startFreshRound && !entrySubmitted)
         {
             var dist = (pos - EntryPoint).Length();
             if (dist > EntryReachRadius)
@@ -652,7 +653,7 @@ public sealed partial class AutoPalController
     /// </summary>
     private void UpdateNonLeaderFreshRoundFlag()
     {
-        if (!config.EnableRoundLimit)
+        if (!config.EnableRoundLimit || config.FortuneMode)
         {
             startFreshRound = false;
             return;
@@ -797,7 +798,8 @@ public sealed partial class AutoPalController
     {
         var slot = SaveSlotIndex;
         // 是否“重开一轮”：需要保证存档槽为空，才能在最后的 SelectString 选起始层
-        var fresh = config.EnableRoundLimit && startFreshRound;
+        // （财运亨通模式永远续打旧存档，不会重开）
+        var fresh = config.EnableRoundLimit && !config.FortuneMode && startFreshRound;
         // 最后一个 SelectString 的选项索引：重开一轮 -> 起始层索引；否则 0（第一层 / 续打旧存档）
         entryStartFloorIndex = fresh ? StartFloorSelectIndex : 0;
 

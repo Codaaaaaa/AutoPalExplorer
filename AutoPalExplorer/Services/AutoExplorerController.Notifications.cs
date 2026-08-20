@@ -56,8 +56,39 @@ public sealed partial class AutoPalController
     public void NotifyBuriedtActivated()
     {
         hasOpenBurinedChest = true;
+        // 财运亨通模式：本次进本第一次踩出宝藏时计数
+        CountFortuneTreasure();
         if (config.devMode)
             log.Information("[AutoPalExplorer] 收到埋藏的宝藏通知。");
+    }
+
+    /// <summary>
+    /// 收到系统消息「这一朝圣路似乎有宝藏……」：本层确实有埋藏的宝藏。
+    /// 只有这条（或宝藏物件真的出现）才算数，感知宝藏的 Buff 提示不算。
+    /// 目前只有财运亨通模式会用这个标记。
+    /// </summary>
+    public void NotifyFloorHasTreasure()
+    {
+        if (fortuneFloorHasTreasure)
+            return;
+
+        fortuneFloorHasTreasure = true;
+        if (config.FortuneMode)
+            log.Information("[AutoPalExplorer] 本层有埋藏的宝藏（系统提示）。");
+    }
+
+    /// <summary>
+    /// 收到系统消息「这一朝圣路似乎没有宝藏……」：本层确定没有埋藏的宝藏，
+    /// 财运亨通模式据此立刻退本重进，不用再等检测超时。（其它模式不读这个标记。）
+    /// </summary>
+    public void NotifyFloorNoTreasure()
+    {
+        if (fortuneFloorNoTreasure)
+            return;
+
+        fortuneFloorNoTreasure = true;
+        if (config.FortuneMode)
+            log.Information("[AutoPalExplorer] 本层没有埋藏的宝藏（系统提示）。");
     }
 
     /// <summary>收到聊天“点亮了光耀烛台”：本层已互动过烛台，不再重复互动（换层重置）。</summary>

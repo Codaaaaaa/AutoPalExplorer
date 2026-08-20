@@ -62,6 +62,7 @@ public sealed class Plugin : IDalamudPlugin
         // 加载配置
         config = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         config.Initialize(PluginInterface);
+        config.Migrate();
 
         // 依赖
         var vnavmesh = new VNavmeshClient(PluginInterface, Log);
@@ -222,7 +223,25 @@ public sealed class Plugin : IDalamudPlugin
             if (config.devMode)
                 Log.Information("可以感知到宝藏埋藏的位置了");
             // controller.NotifyBuriedtActivated();
+            // 注意：这条只代表「感知宝藏用出去了」，有没有宝藏要看后面那条
+            // “这一朝圣路似乎有/没有宝藏……”，所以这里不能当成本层有宝藏。
             pomanderManager.NotifyBuriedtBuff();
+        }
+
+        // 用完「魔陶器：感知宝藏」后的系统消息：
+        //   “这一朝圣路似乎没有宝藏……” -> 本层没有，直接退本重进
+        //   “这一朝圣路似乎有宝藏……”   -> 本层有，去找
+        if (text.Contains("似乎没有宝藏", StringComparison.Ordinal))
+        {
+            if (config.devMode)
+                Log.Information("这一朝圣路似乎没有宝藏");
+            controller.NotifyFloorNoTreasure();
+        }
+        else if (text.Contains("似乎有宝藏", StringComparison.Ordinal))
+        {
+            if (config.devMode)
+                Log.Information("这一朝圣路似乎有宝藏");
+            controller.NotifyFloorHasTreasure();
         }
 
         if (text.Contains("获得了埋藏的宝藏！", StringComparison.OrdinalIgnoreCase))

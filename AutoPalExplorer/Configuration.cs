@@ -17,7 +17,27 @@ namespace AutoPalExplorer
 
     public class Configuration : IPluginConfiguration
     {
-        public int Version { get; set; } = 1;
+        /// <summary>当前配置版本；改了默认值又想让老配置跟着走时 +1，并在 <see cref="Migrate"/> 里处理。</summary>
+        public const int CurrentVersion = 3;
+
+        // 财运亨通模式的默认值（同时用于老配置的迁移，见 Migrate）
+        public const string DefaultFortuneTeleportCommand = "/vnav moveto";
+        public const float DefaultFortuneTeleportYOffset = 0.0f;
+        public const int DefaultFortuneEnterDelaySeconds = 1;
+        public const int DefaultFortuneReenterDelaySeconds = 1;
+        public const int DefaultFortuneDetectWaitSeconds = 2;
+        public const int DefaultFortuneMemberExtraWaitSeconds = 0;
+        public const int DefaultFortuneTreasureWaitSeconds = 50;
+        public const int DefaultFortuneRoomScanWaitMs = 5000;
+        public const int DefaultFortuneSearchTimeoutSeconds = 50;
+
+        // 进本 / 退本时要发的指令（多条用 ; 或换行隔开）
+        public const string DefaultFortuneEnterCommands =
+            "/i-ching-commander y_adjust -7 true;/i-ching-commander speed 0.3";
+        public const string DefaultFortuneLeaveCommands =
+            "/i-ching-commander y_adjust 0 true;/i-ching-commander speed 0";
+
+        public int Version { get; set; } = CurrentVersion;
 
         // 原有
         public bool EnabledByDefault { get; set; } = false;
@@ -115,6 +135,46 @@ namespace AutoPalExplorer
         // 魔陶器使用间隔
         public int PomanderIntervalSeconds { get; set; } = 5000;
 
+        // ===== 财运亨通模式 =====
+        // 专门刷「埋藏的宝藏」的模式：用 1-10 层带「魔陶器：感知宝藏」的存档反复进 11 层，
+        // 队长用感知宝藏 -> 有宝藏就传送过去踩出来 -> 全队退本重进（不删存档），一直循环。
+        public bool FortuneMode { get; set; } = false;
+
+        // 传送指令前缀，最终发出的是「{前缀} x y z」
+        public string FortuneTeleportCommand { get; set; } = DefaultFortuneTeleportCommand;
+
+        // 传送时对坐标的 Y 轴修正（实际传送到 y - 该值）
+        public float FortuneTeleportYOffset { get; set; } = DefaultFortuneTeleportYOffset;
+
+        // 进本后先等几秒再用感知宝藏（等加载 / 队友进齐）
+        public int FortuneEnterDelaySeconds { get; set; } = DefaultFortuneEnterDelaySeconds;
+
+        // 进本后要发的指令（多条用 ; 或换行隔开），在读条结束、进本缓冲走完之后发
+        public string FortuneEnterCommands { get; set; } = DefaultFortuneEnterCommands;
+
+        // 退本时要发的指令（多条用 ; 或换行隔开），在请求退本之前发
+        public string FortuneLeaveCommands { get; set; } = DefaultFortuneLeaveCommands;
+
+        // 用完感知宝藏后等多久还没收到「似乎有宝藏」/ 看到宝藏点，就判定「本层没宝藏」
+        public int FortuneDetectWaitSeconds { get; set; } = DefaultFortuneDetectWaitSeconds;
+
+        // 队员比队长多等几秒再退本（队员不用魔陶器，只跟着走）
+        public int FortuneMemberExtraWaitSeconds { get; set; } = DefaultFortuneMemberExtraWaitSeconds;
+
+        // 传送到宝藏点后，最多站着等多久（超时也退本重进）
+        public int FortuneTreasureWaitSeconds { get; set; } = DefaultFortuneTreasureWaitSeconds;
+
+        // 「这一朝圣路似乎有宝藏」但宝藏不在视野里时，逐个房间传送搜索：
+        // 每传送到一个房间后等多久（等物件加载出来）
+        public int FortuneRoomScanWaitMs { get; set; } = DefaultFortuneRoomScanWaitMs;
+
+        // 逐房间搜索的总超时，超过就放弃这一趟，退本重进
+        public int FortuneSearchTimeoutSeconds { get; set; } = DefaultFortuneSearchTimeoutSeconds;
+
+        // 退本回到入口地图后，等几秒再开始重新进本
+        // （刚落地就去点入口，菜单往往还没能弹出来，反而要等任务超时，白白卡几十秒）
+        public int FortuneReenterDelaySeconds { get; set; } = DefaultFortuneReenterDelaySeconds;
+
         // 数据库路径
         public string PalacePalDbPath { get; set; } = "palace-pal.data.sqlite3";
 
@@ -150,6 +210,31 @@ namespace AutoPalExplorer
         public void Initialize(IDalamudPluginInterface pluginInterface)
         {
             this.pluginInterface = pluginInterface;
+        }
+
+        /// <summary>
+        /// 老配置迁移。财运亨通模式还在调参阶段，1 -> 2 直接把这几项拉回新默认值，
+        /// 免得旧配置里存着上一版的传送指令 / 等待时间。
+        /// </summary>
+        public void Migrate()
+        {
+            if (Version >= CurrentVersion)
+                return;
+
+            FortuneTeleportCommand = DefaultFortuneTeleportCommand;
+            FortuneTeleportYOffset = DefaultFortuneTeleportYOffset;
+            FortuneEnterDelaySeconds = DefaultFortuneEnterDelaySeconds;
+            FortuneReenterDelaySeconds = DefaultFortuneReenterDelaySeconds;
+            FortuneDetectWaitSeconds = DefaultFortuneDetectWaitSeconds;
+            FortuneMemberExtraWaitSeconds = DefaultFortuneMemberExtraWaitSeconds;
+            FortuneTreasureWaitSeconds = DefaultFortuneTreasureWaitSeconds;
+            FortuneRoomScanWaitMs = DefaultFortuneRoomScanWaitMs;
+            FortuneSearchTimeoutSeconds = DefaultFortuneSearchTimeoutSeconds;
+            FortuneEnterCommands = DefaultFortuneEnterCommands;
+            FortuneLeaveCommands = DefaultFortuneLeaveCommands;
+
+            Version = CurrentVersion;
+            Save();
         }
 
         public void Save()

@@ -12,7 +12,7 @@
 
     <!-- 插件版本。build.sh 会自动递增最后一位并同步到 ../Pal/Pal.json。
          也可用 IDE 直接构建，此时使用下面这个固定值（不会自增）。 -->
-    <Version>1.0.0.35</Version>
+    <Version>1.0.0.36</Version>
 
     <!-- 输出目录直接是 bin/Release/AutoPalExplorer.dll，方便 Dalamud & Packager -->
     <OutputPath>bin\$(Configuration)\</OutputPath>

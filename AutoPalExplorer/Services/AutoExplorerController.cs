@@ -399,7 +399,12 @@ public sealed partial class AutoPalController
         roundCounted = false;
         saveSlotHasData = false;
         entryStartFloorIndex = 0;
-        startFreshRound = config.EnableRoundLimit;
+        startFreshRound = config.EnableRoundLimit && !config.FortuneMode;
+        // 财运亨通模式：计数从按下「开始」起算
+        ResetFortuneState();
+
+        if (config.FortuneMode)
+            log.Information("[AutoPalExplorer][财运亨通] 已启动：用当前存档反复进本刷埋藏的宝藏。");
 
         if (config.devMode)
             log.Information("[AutoPalExplorer] 已启动，当前地城 Territory={TerritoryType}。", clientState.TerritoryType);
@@ -436,6 +441,11 @@ public sealed partial class AutoPalController
         // 轮次控制
         startFreshRound = false;
         roundCounted = false;
+        // 财运亨通：停下后不再续跑状态机（计数保留，方便查看战果），
+        // 并补发一次退本指令，免得 y_adjust / speed 留在穿地板状态。
+        fortuneRunActive = false;
+        if (config.FortuneMode)
+            EnsureFortuneRestoreCommands();
 
         if (config.devMode)
             log.Information("[AutoPalExplorer] 已停止。");
@@ -470,6 +480,11 @@ public sealed partial class AutoPalController
         // 地宫入口地图（terr 816）：只有车头模式自动进本，不走下面的探索/停止逻辑
         if (clientState.TerritoryType == EntryTerritory)
         {
+            // 财运亨通模式：回到入口说明上一趟已经结束；先等几秒再重新进本
+            // （刚落地就点入口，地宫菜单还没能弹出来，反而要等任务超时）
+            if (config.FortuneMode && !TickFortuneEntryDelay())
+                return;
+
             HandleDungeonEntry(player.Position);
             return;
         }
@@ -495,6 +510,13 @@ public sealed partial class AutoPalController
         {
             log.Information("[AutoPalExplorer] Update Tick：Territory={Territory}, 位置=({X:0.00}, {Y:0.00}, {Z:0.00})，BMRAI={Bmrai}，NavigatorBusy={Busy}",
                 clientState.TerritoryType, pos.X, pos.Y, pos.Z, bmraiOn, navigator.IsBusy);
+        }
+
+        // 财运亨通模式：完全接管本帧（不探索、不打怪、不开箱，只走「感知宝藏 -> 踩宝藏 -> 退本重进」）
+        if (config.FortuneMode)
+        {
+            HandleFortuneMode(player, pos);
+            return;
         }
 
         UpdateStaticObjectPositions();
@@ -562,6 +584,7 @@ public sealed partial class AutoPalController
     //   .Rooms         – 房间图探索 / 房间中心标定 / 按房间顺序盲踩
     //   .BlindSearch   – 盲踩埋藏宝藏（PalacePal 数据）
     //   .Online        – 联机盲踩同步（HTTP）
+    //   .Fortune       – 财运亨通模式（反复进本刷埋藏的宝藏）
     //   .Commands      – BMRAI / 游戏指令 / 跟随
     //   .Notifications – 聊天事件通知入口（Notify*）
 }

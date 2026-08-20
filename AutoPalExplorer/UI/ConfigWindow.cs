@@ -86,8 +86,12 @@ namespace AutoPalExplorer
                 if (ImGui.Button("Start##autopal"))
                     controller.Start();
             }
-            
+
+            DrawFortuneConfig();
+
             ImGui.Separator();
+
+            ImGui.BeginDisabled(config.FortuneMode);
 
             bool usingPomander = config.UsingPomander;
             if (ImGui.Checkbox("使用魔陶器", ref usingPomander))
@@ -109,7 +113,13 @@ namespace AutoPalExplorer
             ImGui.EndDisabled();
             ImGui.Unindent();
 
+            ImGui.EndDisabled();
+
+            // 存档槽在财运亨通模式下仍然要能选（要选中那个 1-10 层带感知宝藏的存档），
+            // 所以 DrawRoundConfig 自己内部处理禁用，不放在上面的禁用块里。
             DrawRoundConfig();
+
+            ImGui.BeginDisabled(config.FortuneMode);
 
             ImGui.Separator();
             ImGui.TextUnformatted("战斗设置:");
@@ -241,6 +251,8 @@ namespace AutoPalExplorer
                     ImGui.TextUnformatted(onlineTestResult);
                 }
             }
+
+            ImGui.EndDisabled();
 
             ImGui.Separator();
             ImGui.TextUnformatted("其他:");
@@ -823,6 +835,8 @@ namespace AutoPalExplorer
                 config.Save();
             }
 
+            ImGui.BeginDisabled(config.FortuneMode);
+
             bool enableRound = config.EnableRoundLimit;
             if (ImGui.Checkbox("启用「打到指定层停止 / 多轮」", ref enableRound))
             {
@@ -833,7 +847,7 @@ namespace AutoPalExplorer
                 ImGui.SetTooltip("关闭时保持原来的“无限连续刷本”行为。\n开启后：从起始层进本，打到停止层出本删档，等待若干秒重新排本，重复设定轮数后自动停止。");
 
             ImGui.Indent();
-            ImGui.BeginDisabled(!config.EnableRoundLimit);
+            ImGui.BeginDisabled(!config.EnableRoundLimit || config.FortuneMode);
 
             // 起始层：1 / 21 / 31 / 51 / 71
             int[] startFloors = { 1, 21, 31, 51, 71 };
@@ -890,6 +904,168 @@ namespace AutoPalExplorer
             }
 
             ImGui.EndDisabled();
+            ImGui.Unindent();
+            ImGui.EndDisabled();
+
+            if (config.FortuneMode)
+                ImGui.TextDisabled("（财运亨通模式固定续打同一个存档，轮次设置不生效）");
+        }
+
+        /// <summary>
+        /// 财运亨通模式：反复进本刷「埋藏的宝藏」。
+        /// 队长用感知宝藏 -> 有宝藏就传送过去踩出来 -> 全队退本重进（不重置存档），一直循环。
+        /// </summary>
+        private void DrawFortuneConfig()
+        {
+            ImGui.Separator();
+            ImGui.TextUnformatted("财运亨通模式:");
+
+            bool fortune = config.FortuneMode;
+            if (ImGui.Checkbox("启用财运亨通模式", ref fortune))
+            {
+                config.FortuneMode = fortune;
+                config.Save();
+            }
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip(
+                    @"专门发现宝藏的模式
+
+使用前先人工准备：打一个 1-10 层的存档，存档里留着「魔陶器：感知宝藏」，
+然后在上面的「使用存档」里选中这个存档（全队都要选自己的那个）。
+
+开启后：队长续打存档进 11 层（不删存档），队员原地等着被带进来；
+队长用感知宝藏 —— 没出现「这一朝圣路似乎有宝藏」就全队退本重进；
+有宝藏就传送到宝藏点站定（宝藏不在视野里时先逐个房间传送去找），
+等宝藏被踩出来后全队退本重进，一直循环到手动暂停。
+
+开启后上面的探索 / 宝箱 / 房间图 / 轮次设置都不生效。");
+            }
+
+            if (!config.FortuneMode)
+                return;
+
+            ImGui.Indent();
+
+            // ===== 战果计数（从按下 Start 起算）=====
+            ImGui.TextUnformatted("累计获得宝藏：");
+            ImGui.SameLine();
+            ImGui.TextColored(new Vector4(1.0f, 0.85f, 0.2f, 1.0f), controller.FortuneTreasureCount.ToString());
+            ImGui.SameLine();
+            ImGui.TextDisabled($"（已进本 {controller.FortuneRunCount} 次）");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("计数清零##fortune"))
+                controller.ResetFortuneCounters();
+
+            if (controller.IsRunning)
+            {
+                ImGui.TextUnformatted("当前阶段：");
+                ImGui.SameLine();
+                ImGui.TextColored(new Vector4(0.3f, 0.9f, 1.0f, 1.0f), controller.FortuneStageText);
+            }
+
+            if (ImGui.CollapsingHeader("财运亨通参数"))
+            {
+                ImGui.PushItemWidth(140f);
+
+                string tpCmd = config.FortuneTeleportCommand ?? string.Empty;
+                if (ImGui.InputText("传送指令前缀", ref tpCmd, 64))
+                {
+                    config.FortuneTeleportCommand = tpCmd;
+                    config.Save();
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("最终发出的指令是「前缀 x y z」，默认 /vnav moveto。");
+
+                string enterCmds = config.FortuneEnterCommands ?? string.Empty;
+                if (ImGui.InputText("进本指令", ref enterCmds, 256))
+                {
+                    config.FortuneEnterCommands = enterCmds;
+                    config.Save();
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("进本读条结束、进本缓冲走完后发这些指令，多条用 ; 隔开。\n默认：/i-ching-commander y_adjust -7 true;/i-ching-commander speed 0.3");
+
+                string leaveCmds = config.FortuneLeaveCommands ?? string.Empty;
+                if (ImGui.InputText("退本指令", ref leaveCmds, 256))
+                {
+                    config.FortuneLeaveCommands = leaveCmds;
+                    config.Save();
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("请求退本之前发这些指令，多条用 ; 隔开。\n默认：/i-ching-commander y_adjust 0 true;/i-ching-commander speed 0\n手动按 Stop 时也会补发一次。");
+
+                float yOffset = config.FortuneTeleportYOffset;
+                if (ImGui.DragFloat("传送 Y 轴偏移", ref yOffset, 0.5f, 0.0f, 30.0f, "%.1f"))
+                {
+                    config.FortuneTeleportYOffset = yOffset;
+                    config.Save();
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("传送到「目标 y - 该值」，默认 0（传送指令需要 Y 修正时才改）。");
+
+                int enterDelay = config.FortuneEnterDelaySeconds;
+                if (ImGui.DragInt("进本缓冲 (s)", ref enterDelay, 1, 0, 60))
+                {
+                    config.FortuneEnterDelaySeconds = Math.Max(0, enterDelay);
+                    config.Save();
+                }
+
+                int reenterDelay = config.FortuneReenterDelaySeconds;
+                if (ImGui.DragInt("退本后重进缓冲 (s)", ref reenterDelay, 1, 0, 60))
+                {
+                    config.FortuneReenterDelaySeconds = Math.Max(0, reenterDelay);
+                    config.Save();
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("退本回到入口后等这么久再去点入口排本。\n填太小会在地宫菜单还没弹出来时就去点，反而更慢。");
+
+                int detectWait = config.FortuneDetectWaitSeconds;
+                if (ImGui.DragInt("宝藏检测等待 (s)", ref detectWait, 1, 1, 60))
+                {
+                    config.FortuneDetectWaitSeconds = Math.Max(1, detectWait);
+                    config.Save();
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("用完感知宝藏后等这么久还没出现宝藏点，就判定本层没宝藏，直接退本重进。");
+
+                int memberWait = config.FortuneMemberExtraWaitSeconds;
+                if (ImGui.DragInt("队员额外等待 (s)", ref memberWait, 1, 0, 60))
+                {
+                    config.FortuneMemberExtraWaitSeconds = Math.Max(0, memberWait);
+                    config.Save();
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("队员不用魔陶器，比队长多等这么久再退本，避免比队长先跑出去。");
+
+                int treasureWait = config.FortuneTreasureWaitSeconds;
+                if (ImGui.DragInt("等待宝藏超时 (s)", ref treasureWait, 1, 3, 300))
+                {
+                    config.FortuneTreasureWaitSeconds = Math.Max(3, treasureWait);
+                    config.Save();
+                }
+
+                int roomScanWait = config.FortuneRoomScanWaitMs;
+                if (ImGui.DragInt("每个房间停留 (ms)", ref roomScanWait, 100, 200, 10000))
+                {
+                    config.FortuneRoomScanWaitMs = Math.Max(200, roomScanWait);
+                    config.Save();
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("宝藏不在视野里时会逐个房间传送去找，\n每传到一个房间停留这么久等物件加载。");
+
+                int searchTimeout = config.FortuneSearchTimeoutSeconds;
+                if (ImGui.DragInt("逐房间搜索超时 (s)", ref searchTimeout, 5, 10, 600))
+                {
+                    config.FortuneSearchTimeoutSeconds = Math.Max(10, searchTimeout);
+                    config.Save();
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("找这么久还没找到宝藏就放弃这一趟，退本重进。");
+
+                ImGui.PopItemWidth();
+            }
+
             ImGui.Unindent();
         }
 

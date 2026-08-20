@@ -149,9 +149,10 @@ public sealed partial class AutoPalController
     /// 每帧维护房间图状态：判断有没有换层、把“玩家所在房间 + 世界坐标”喂给标定器。
     /// 只有副作用，不接管任何一帧。
     /// </summary>
-    private unsafe void TickRoomState(IPlayerCharacter player, Vector3 pos)
+    private unsafe void TickRoomState(IPlayerCharacter player, Vector3 pos, bool force = false)
     {
-        if (!config.UseRoomGraph)
+        // force：财运亨通模式要靠房间中心传送找宝藏，即使用户关了房间图也得标定
+        if (!config.UseRoomGraph && !force)
         {
             currentRoomIndex = -1;
             return;

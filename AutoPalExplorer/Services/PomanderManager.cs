@@ -49,6 +49,18 @@ public sealed class PomanderManager
     private bool hasBuriedBuff = false;
     public bool HasBuriedBuff => hasBuriedBuff;
 
+    /// <summary>财运亨通模式里「魔陶器：感知宝藏」的使用状态。</summary>
+    public enum IntuitionRequestState
+    {
+        Idle,     // 本次进本还没请求过
+        Pending,  // 已请求，等 DeepDungeonStatus 面板就绪
+        Used,     // 已经真的点下去了
+        Missing,  // 面板里没有这个魔陶器
+    }
+
+    private IntuitionRequestState intuitionState = IntuitionRequestState.Idle;
+    public IntuitionRequestState IntuitionState => intuitionState;
+
     // 杜松香计数：满 3 个用一次（callback 12, 0），用后 -1
     private int juniperCount = 0;
     private const int JuniperUseThreshold = 3;
@@ -450,6 +462,51 @@ public sealed class PomanderManager
             return null;
 
         return compNode->Component->UldManager.SearchNodeById(id);
+    }
+
+    /// <summary>
+    /// 财运亨通模式：使用「魔陶器：感知宝藏」。
+    /// 打开 DeepDungeonStatus 面板 -> 读一次数量 -> 有货才点，结果写在 <see cref="IntuitionState"/> 里。
+    /// </summary>
+    public unsafe void UseIntuitionPomander()
+    {
+        intuitionState = IntuitionRequestState.Pending;
+
+        if (!TryGetAddonByName<AtkUnitBase>("DeepDungeonStatus", out _))
+        {
+            var agent = AgentDeepDungeonStatus.Instance();
+            if (agent != null)
+                agent->AgentInterface.Show();
+        }
+
+        taskManager.Enqueue(() =>
+            TryGetAddonByName<AtkUnitBase>("DeepDungeonStatus", out var a) && IsAddonReady(a));
+
+        taskManager.Enqueue(() =>
+        {
+            if (!TryGetAddonByName<AtkUnitBase>("DeepDungeonStatus", out var addon) || !IsAddonReady(addon))
+                return;
+
+            ReadPomanderCountsFromAddon(addon);
+
+            var entry = FindPomanderByType("Intuition");
+            if (entry is null || entry.Count <= 0)
+            {
+                intuitionState = IntuitionRequestState.Missing;
+                log.Warning("[AutoPalExplorer][财运亨通] 面板里没有「魔陶器：感知宝藏」。");
+                return;
+            }
+
+            Callback.Fire(addon, true, 11, entry.PomanderId);
+            intuitionState = IntuitionRequestState.Used;
+            log.Information("[AutoPalExplorer][财运亨通] 已使用「魔陶器：感知宝藏」（使用前剩余 {Count} 个）。", entry.Count);
+        });
+    }
+
+    /// <summary>每次重新进本时清掉上一次的感知宝藏使用状态。</summary>
+    public void ResetIntuitionState()
+    {
+        intuitionState = IntuitionRequestState.Idle;
     }
 
     public void NotifyBuriedtBuff()

@@ -74,17 +74,20 @@ public sealed partial class AutoPalController
             log.Information("[AutoPalExplorer] 已发送 Rotation 关闭指令。");
     }
 
-    public void TryCommand(string command)
+    /// <summary>执行一条 Dalamud / 插件指令；返回是否真的有插件处理了它。</summary>
+    public bool TryCommand(string command)
     {
         try
         {
-            commandManager.ProcessCommand(command);
+            var handled = commandManager.ProcessCommand(command);
             if (config.devMode)
-                log.Information("[AutoPalExplorer] 执行指令：{Cmd}", command);
+                log.Information("[AutoPalExplorer] 执行指令：{Cmd}（handled={Handled}）", command, handled);
+            return handled;
         }
         catch (Exception ex)
         {
             log.Warning($"[AutoPalExplorer] 执行指令失败 '{command}': {ex.Message}");
+            return false;
         }
     }
 

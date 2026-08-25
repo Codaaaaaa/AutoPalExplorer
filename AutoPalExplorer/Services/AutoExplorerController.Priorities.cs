@@ -55,6 +55,7 @@ public sealed partial class AutoPalController
         ResetBlindWalkState();
         ResetStaticObjectsState();
         ResetRoomState();         // 房间图：上一层的标定 / 目标 / 拉黑名单全部作废
+        ResetTrapAvoidState();    // 避陷阱：上一层的陷阱圈 / navmesh 投影缓存作废
         ResetFloorSpecialState(); // 99/100 层收尾状态（不清 currentFloor，那是聊天设置的）
         ClearLockedChest();
 

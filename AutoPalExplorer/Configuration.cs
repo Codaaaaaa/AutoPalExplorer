@@ -103,8 +103,16 @@ namespace AutoPalExplorer
         // All：使用全部魔陶器和杜松香
         public PomanderUsageMode PomanderMode { get; set; } = PomanderUsageMode.All;
 
-        // 避雷圈半径
+        // 避雷圈半径（只管「导航目标点」别贴着陷阱，见 TrySafeMoveTo）
         public float TrapAvoidRadius { get; set; } = 1.5f;
+
+        // ===== 路径级避陷阱（把 vnav 算出来的整条路线绕开陷阱，而不只是终点）=====
+        // 只在普通模式生效；财运亨通模式全程用传送指令，不走这套逻辑。
+        public bool AvoidTrapsOnPath { get; set; } = true;
+
+        // 绕行时给每个陷阱建的危险圈半径（米）。比 TrapAvoidRadius 大一点，
+        // 因为路上是「擦着过去」，留的余量要够角色转向和减速。
+        public float TrapPathAvoidRadius { get; set; } = 2.5f;
 
         // 开箱节流间隔（毫秒）
         public int ChestInteractIntervalMs { get; set; } = 500;

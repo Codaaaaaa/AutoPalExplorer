@@ -179,6 +179,7 @@ public sealed partial class AutoPalController
         return null;
     }
     private float TrapAvoidRadiusCfg => MathF.Max(0.1f, config.TrapAvoidRadius);
+    private float TrapPathAvoidRadiusCfg => MathF.Max(0.5f, config.TrapPathAvoidRadius);
     private int ChestInteractIntervalMs => Math.Max(50, config.ChestInteractIntervalMs);
     private bool nextLevelBool = false;
     private bool hasOpenedNextPilgrimWindow = false;
@@ -381,6 +382,7 @@ public sealed partial class AutoPalController
         ResetBlindWalkState();
         ResetStaticObjectsState();
         ResetRoomState();
+        ResetTrapAvoidState();
         ClearLockedChest();
         // 99/100 层特殊流程
         currentFloor = 0;
@@ -431,6 +433,7 @@ public sealed partial class AutoPalController
         ResetBlindWalkState();
         ResetStaticObjectsState();
         ResetRoomState();
+        ResetTrapAvoidState();
         ClearLockedChest();
         // 99/100 层特殊流程
         currentFloor = 0;
@@ -547,6 +550,7 @@ public sealed partial class AutoPalController
 
         // 2. 更新导航 & 目标检测
         navigator.Update();
+        TickTrapAvoidance(pos);   // 路径级避陷阱：把 vnav 当前路线穿过陷阱圈的那段换成绕行圆弧
         exitDetector.Update(pos);
 
         var currentTarget = navigator.CurrentTarget;

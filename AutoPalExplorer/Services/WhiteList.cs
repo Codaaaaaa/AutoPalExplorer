@@ -17,6 +17,7 @@ public static class WhiteListCheck
         "18014469510044058", // baimofashi
         "18014449513731067", // huashengkakaer
         "18014469510937372", // xiazhong
+        "19014409515331231", // kakaliya
     ];
 
     public static bool IsPlayerAllowed(IPlayerState playerState)

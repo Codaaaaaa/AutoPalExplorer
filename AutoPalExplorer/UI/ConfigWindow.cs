@@ -383,6 +383,36 @@ namespace AutoPalExplorer
                     config.TrapAvoidRadius = MathF.Max(0.1f, trapRadius);
                     config.Save();
                 }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("只管「导航目标点」别贴着陷阱：目标太近就往外挪一点。\n路上会不会踩到由下面的「路线绕开陷阱」决定。");
+
+                // AvoidTrapsOnPath
+                bool avoidTrapsOnPath = config.AvoidTrapsOnPath;
+                if (ImGui.Checkbox("路线绕开陷阱", ref avoidTrapsOnPath))
+                {
+                    config.AvoidTrapsOnPath = avoidTrapsOnPath;
+                    config.Save();
+                }
+                if (ImGui.IsItemHovered())
+                {
+                    ImGui.SetTooltip(
+                        "把 vnav 算出来的整条路线读回来，穿过陷阱的那一段替换成绕行圆弧再走。\n" +
+                        "只在普通模式生效，财运亨通模式全程用传送指令，不受影响。\n" +
+                        "狂暴盲踩(排雷)模式里「目标点就是陷阱」的情况不会被绕开，仍然会去踩。");
+                }
+
+                if (config.AvoidTrapsOnPath)
+                {
+                    // TrapPathAvoidRadius
+                    float trapPathRadius = config.TrapPathAvoidRadius;
+                    if (ImGui.DragFloat("路线绕行半径", ref trapPathRadius, 0.1f, 0.5f, 10.0f, "%.1f"))
+                    {
+                        config.TrapPathAvoidRadius = MathF.Max(0.5f, trapPathRadius);
+                        config.Save();
+                    }
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip("绕行时给每个陷阱画的圈有多大（米）。\n调大更安全但更容易在窄通道里绕不过去（绕不过去时自动走原路）。");
+                }
 
                 // ChestInteractIntervalMs
                 int chestInterval = config.ChestInteractIntervalMs;

@@ -288,6 +288,7 @@ public sealed partial class AutoPalController
     {
         rememberedChests.Clear();
         ClearRememberedChestTarget();
+        ClearBuriedMemoryTarget();
         unearthedChestPending = false;
         unearthedChestPendingAt = DateTime.MinValue;
     }

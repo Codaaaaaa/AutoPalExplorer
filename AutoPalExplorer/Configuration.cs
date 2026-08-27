@@ -84,7 +84,7 @@ namespace AutoPalExplorer
 
         // ===== 远程开怪（避免脸开） =====
         // 走到怪物这个距离（米）以内就停下用远程技能开怪；填 <=0 表示沿用旧的“走到脸上”行为
-        public float PullRange { get; set; } = 5.0f;
+        public float PullRange { get; set; } = 3.0f;
 
         // 开怪指令（例如 /ac "炽热光辉" 或某个宏）。留空则不使用远程开怪，退回“走到脸上交给 BMRAI”
         public string PullActionCommand { get; set; } = "";

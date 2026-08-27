@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 
 namespace AutoPalExplorer.Helpers
 {
@@ -73,6 +73,9 @@ namespace AutoPalExplorer.Helpers
             2007543u,
         };
 
+        // 还没踩出来的埋藏点（踩出来之后会变成 2007543 的宝箱）
+        public const uint BuriedSpotBaseId = 2007542u;
+
         // 陷阱
         public static readonly HashSet<uint> TrapIds = new()
         {
@@ -107,6 +110,10 @@ namespace AutoPalExplorer.Helpers
 
         public static bool IsBuriedChest(uint baseId)
             => BuriedChestIds.Contains(baseId);
+
+        /// <summary>还没踩出来的埋藏点（不含已经踩出来的宝箱 2007543）。</summary>
+        public static bool IsBuriedSpot(uint baseId)
+            => baseId == BuriedSpotBaseId;
 
         public static bool IsAnyChest(uint baseId)
             => IsBronzeChest(baseId) || IsSilverChest(baseId) || IsGoldChest(baseId)|| IsBuriedChest(baseId);

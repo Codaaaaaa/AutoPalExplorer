@@ -283,9 +283,17 @@ public sealed partial class AutoPalController
     /// <summary>3.0 埋藏的宝藏（最高优先级实体）：找到就只做这一件事——前往并停在触发范围内等触发。</summary>
     private bool HandleBuriedChest(Vector3 pos, Vector3? currentTarget)
     {
-        var buried = FindNearestBuriedChest(pos, 500f);
-        if (buried is null || hasOpenBurinedChest)
+        if (hasOpenBurinedChest)
             return false;
+
+        var buried = FindNearestBuriedChest(pos, 500f);
+
+        // 对象不在 objectTable 里（走远了被裁剪掉）：用本层缓存的坐标继续走，
+        // 不能在这里放行，否则会被半路的普通宝箱抢走，回来又重新发现，来回拉锯。
+        if (buried is null)
+            return HandleRememberedBuriedSpot(pos, currentTarget);
+
+        ClearBuriedMemoryTarget();
 
         var dxB = buried.Position.X - pos.X;
         var dzB = buried.Position.Z - pos.Z;
@@ -329,6 +337,87 @@ public sealed partial class AutoPalController
         }
 
         return true; // ⭐ 有埋藏宝藏就只处理这一件事
+    }
+
+    /// <summary>
+    /// 3.0 的兜底：埋藏点的物件当前不可见，但本层缓存里记着它的坐标，就照坐标继续走。
+    /// 走到 30 米内还是加载不出来的话，TickChestMemory 的就近核销会把它划掉（已被队友踩掉）；
+    /// 长时间走不到（够不着的点）也会放弃，免得把本层卡死。
+    /// </summary>
+    private bool HandleRememberedBuriedSpot(Vector3 pos, Vector3? currentTarget)
+    {
+        RememberedChest? best = null;
+        var bestDistSq = float.MaxValue;
+
+        foreach (var mem in rememberedChests.Values)
+        {
+            // 只找「还没踩出来的埋藏点」；已经踩出来的宝箱交给出土宝箱 / 普通宝箱逻辑
+            if (!ObjectIds.IsBuriedSpot(mem.BaseId))
+                continue;
+
+            if (ignoredChestIds.Contains(mem.Id))
+                continue;
+
+            var mdx = mem.Pos.X - pos.X;
+            var mdz = mem.Pos.Z - pos.Z;
+            var mdsq = mdx * mdx + mdz * mdz;
+            if (mdsq < bestDistSq)
+            {
+                bestDistSq = mdsq;
+                best = mem;
+            }
+        }
+
+        if (best is null)
+        {
+            ClearBuriedMemoryTarget();
+            return false;
+        }
+
+        var now = DateTime.UtcNow;
+        var dist = MathF.Sqrt(bestDistSq);
+
+        // 换了目标 / 第一次盯上它：重置进展计时
+        if (buriedMemoryTargetId != best.Id)
+        {
+            buriedMemoryTargetId = best.Id;
+            buriedMemoryBestDist = dist;
+            buriedMemoryProgressAt = now;
+
+            if (config.devMode)
+            {
+                log.Information("[AutoPalExplorer] 埋藏点物件不可见，改用缓存坐标：Pos=({X:0.00}, {Y:0.00}, {Z:0.00})，距离={Dist:0.00}。",
+                    best.Pos.X, best.Pos.Y, best.Pos.Z, dist);
+            }
+        }
+        else if (dist < buriedMemoryBestDist - BuriedMemoryProgressEpsilon)
+        {
+            // 还在靠近：刷新进展
+            buriedMemoryBestDist = dist;
+            buriedMemoryProgressAt = now;
+        }
+        else if ((now - buriedMemoryProgressAt).TotalSeconds > BuriedMemoryGiveUpSeconds)
+        {
+            log.Warning("[AutoPalExplorer] 长时间走不到缓存里的埋藏点（距离={Dist:0.00}），放弃该点。", dist);
+            MarkChestDone(best.Id, "走不到缓存里的埋藏点，放弃");
+            ClearBuriedMemoryTarget();
+            return false;
+        }
+
+        if (!navigator.IsBusy || IsDifferentTarget(currentTarget, best.Pos, 0.5f))
+        {
+            SetIntent("埋藏宝藏：按缓存坐标前往（物件暂不可见）");
+            TrySafeMoveTo(best.Pos, TrapAvoidRadiusCfg);
+        }
+
+        return true; // 埋藏宝藏优先级最高，物件看不见也不放行给普通宝箱
+    }
+
+    private void ClearBuriedMemoryTarget()
+    {
+        buriedMemoryTargetId = 0;
+        buriedMemoryBestDist = float.MaxValue;
+        buriedMemoryProgressAt = DateTime.MinValue;
     }
 
     /// <summary>

@@ -204,6 +204,12 @@ public sealed partial class AutoPalController
     private const double RememberedChestGiveUpSeconds = 30.0; // 走这么久还没到就放弃这个缓存宝箱
     // 就近核销：人进到缓存坐标这个距离内还看不到箱子对象，就认定它已经被队友开走了
     private const float RememberedChestVerifyRadius = 30.0f;
+    // 照缓存坐标走向埋藏点时，多久没缩短距离就放弃（防止够不着的点把本层卡死）
+    private ulong buriedMemoryTargetId;
+    private float buriedMemoryBestDist = float.MaxValue;   // 目前离目标最近走到过多少米
+    private DateTime buriedMemoryProgressAt = DateTime.MinValue;
+    private const float BuriedMemoryProgressEpsilon = 1.0f;      // 距离至少缩短这么多才算有进展
+    private const double BuriedMemoryGiveUpSeconds = 60.0;       // 连续这么久没进展就放弃这个埋藏点
     private const double RememberedChestMissingConfirmSeconds = 1.0; // 连续看不到这么久才算数（防单帧抖动）
 
     /// <summary>本层记住的一个宝箱：即使物件被裁剪掉了，坐标还在。</summary>

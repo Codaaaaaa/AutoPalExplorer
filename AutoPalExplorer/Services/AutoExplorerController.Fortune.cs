@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Globalization;
 using System.Numerics;
 
@@ -304,6 +304,7 @@ public sealed partial class AutoPalController
         fortuneLeaveCommandsSent = false;
 
         hasOpenBurinedChest = false;
+        ResetChestMemory();   // 上一趟的宝箱坐标缓存 / 出土宝箱状态作废
         nextLevelBool = false;
         pomanderManager.ResetBuriedBuff();
         pomanderManager.ResetIntuitionState();

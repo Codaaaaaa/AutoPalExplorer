@@ -56,6 +56,16 @@ public sealed partial class AutoPalController
     public void NotifyBuriedtActivated()
     {
         hasOpenBurinedChest = true;
+
+        // 记下踩出来的位置：接下来几帧要站在这儿把出土的宝箱开掉，
+        // 不然箱子还在出土动画（不可交互）时就会被普通宝箱逻辑带去开别的箱子。
+        if (objectTable.LocalPlayer is { } me)
+        {
+            unearthedChestPending = true;
+            unearthedChestPos = me.Position;
+            unearthedChestPendingAt = DateTime.UtcNow;
+        }
+
         // 财运亨通模式：本次进本第一次踩出宝藏时计数
         CountFortuneTreasure();
         if (config.devMode)
@@ -170,12 +180,7 @@ public sealed partial class AutoPalController
             return;
         }
 
-        if (ignoredChestIds.Add(lastChestInteractObjectId))
-        {
-            if (config.devMode)
-                log.Information("[AutoPalExplorer] PomanderOverflow：将 GameObjectId={Id} 加入忽略宝箱列表。",
-                    lastChestInteractObjectId);
-        }
+        MarkChestDone(lastChestInteractObjectId, "魔陶器已满，不再开这个箱子");
 
         // ✅ 新增：如果当前锁的是这个箱子，也顺便解锁
         if (hasLockedChest && lockedChestId == lastChestInteractObjectId)

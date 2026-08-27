@@ -155,6 +155,15 @@ namespace AutoPalExplorer
                 config.OpenGoldChests = openGold;
                 config.Save();
             }
+            bool useCandlestand = config.UseRadiantCandlestand;
+            if (ImGui.Checkbox("自动点光耀烛台", ref useCandlestand))
+            {
+                config.UseRadiantCandlestand = useCandlestand;
+                config.Save();
+            }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("勾上才会去互动光耀烛台；\n触发距离见高级设置里的「光耀烛台优先距离」。");
+
             bool blindChests = config.BlindChests;
             if (ImGui.Checkbox("盲踩模式", ref blindChests))
             {
@@ -295,13 +304,15 @@ namespace AutoPalExplorer
                     config.Save();
                 }
 
-                // RadiantCandlestandNearRange
+                // RadiantCandlestandNearRange（没勾「自动点光耀烛台」时置灰）
+                ImGui.BeginDisabled(!config.UseRadiantCandlestand);
                 float radiantNear = config.RadiantCandlestandNearRange;
                 if (ImGui.DragFloat("光耀烛台优先距离", ref radiantNear, 1.0f, 0.0f, 200.0f, "%.0f"))
                 {
                     config.RadiantCandlestandNearRange = MathF.Max(0.0f, radiantNear);
                     config.Save();
                 }
+                ImGui.EndDisabled();
 
                 // BuriedChestDoneRadius
                 float blindWaitDuration = config.BlindWaitDuration;
@@ -570,6 +581,32 @@ namespace AutoPalExplorer
                         }
                         ImGui.EndChild();
                     }
+                }
+
+                ImGui.Spacing();
+                ImGui.Separator();
+
+                // === 本层宝箱坐标缓存 ===
+                var remembered = controller.GetRememberedChests();
+                ImGui.TextUnformatted($"本层宝箱坐标缓存 ({remembered.Count}):");
+
+                if (remembered.Count == 0)
+                {
+                    ImGui.TextDisabled("(空)");
+                }
+                else if (ImGui.BeginChild("RememberedChestList", new Vector2(0, 150), true))
+                {
+                    int chestIndex = 1;
+                    foreach (var mem in remembered)
+                    {
+                        var line = $"{chestIndex}. BaseId={mem.BaseId} {FormatVector3(mem.Pos)}";
+                        if (mem.Done)
+                            ImGui.TextDisabled(line + "（已处理）");
+                        else
+                            ImGui.TextUnformatted(line);
+                        chestIndex++;
+                    }
+                    ImGui.EndChild();
                 }
 
                 ImGui.Spacing();

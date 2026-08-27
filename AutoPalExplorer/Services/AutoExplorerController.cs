@@ -186,6 +186,37 @@ public sealed partial class AutoPalController
     public readonly HashSet<ulong> ignoredChestIds = new(); // 需要跳过的宝箱
     private ulong lastChestInteractObjectId = 0;             // 最近一次尝试交互的宝箱ID
 
+    // ==== 刚踩出来的埋藏宝箱（收到“发现了埋藏的宝藏！”之后）====
+    // 踩出来的那一瞬间箱子还在出土动画里（IsTargetable=false），这时候如果放行给普通宝箱逻辑，
+    // 就会先跑去开别的箱子、等一圈回来才开脚下这个。这里先接管几帧，站着把它等出来开掉。
+    private bool unearthedChestPending;
+    private Vector3 unearthedChestPos;
+    private DateTime unearthedChestPendingAt = DateTime.MinValue;
+    private const double UnearthedChestWaitSeconds = 5.0;     // 箱子没出现 / 还不可交互时最多等这么久
+    private const double UnearthedChestTimeoutSeconds = 30.0; // 兜底总超时，避免卡死在这一步
+    private const float UnearthedChestSearchRadius = 15.0f;   // 在踩出来的位置附近这个范围内找宝箱
+
+    // ==== 本层宝箱坐标缓存（宝箱从 objectTable 消失后仍然知道它在哪）====
+    private readonly Dictionary<ulong, RememberedChest> rememberedChests = new();
+    // 正在前往的「缓存宝箱」（对象已经看不见，只能照记下的坐标走）
+    private ulong rememberedChestTargetId;
+    private DateTime rememberedChestTargetSince = DateTime.MinValue;
+    private const double RememberedChestGiveUpSeconds = 30.0; // 走这么久还没到就放弃这个缓存宝箱
+    // 就近核销：人进到缓存坐标这个距离内还看不到箱子对象，就认定它已经被队友开走了
+    private const float RememberedChestVerifyRadius = 30.0f;
+    private const double RememberedChestMissingConfirmSeconds = 1.0; // 连续看不到这么久才算数（防单帧抖动）
+
+    /// <summary>本层记住的一个宝箱：即使物件被裁剪掉了，坐标还在。</summary>
+    public sealed class RememberedChest
+    {
+        public ulong Id;
+        public uint BaseId;
+        public Vector3 Pos;
+        public DateTime FirstSeenAt;
+        public DateTime LastSeenAt;
+        public DateTime MissingSince;   // 进到核销距离内、又看不到它的起始时刻
+    }
+
     // 锁定中的宝箱（防止在宝箱和门/怪之间来回切）
     private bool hasLockedChest = false;
     private ulong lockedChestId = 0;
@@ -523,6 +554,7 @@ public sealed partial class AutoPalController
         }
 
         UpdateStaticObjectPositions();
+        TickChestMemory(pos);                // 本层宝箱坐标缓存（消失后还知道在哪 + 就近核销）
         TickRoomState(player, pos);          // 房间图：换层检测 + 房间中心在线标定
 
         // ===== 每帧状态维护（仅副作用，不接管本帧） =====
@@ -567,9 +599,11 @@ public sealed partial class AutoPalController
         if (TryHelpPartyInCombat(pos, player, currentTarget)) return;                   // 2.2 支援进战的队友
         if (HandleRadiantCandlestand(pos, currentTarget, RadiantCandlestandNearRange)) return; // 2.3 光耀烛台（≤30m 抢在宝箱前）
         if (HandleBuriedChest(pos, currentTarget)) return;                             // 3.0 埋藏的宝藏
+        if (HandleUnearthedChest(pos, currentTarget)) return;                          // 3.0a 刚踩出来的埋藏宝箱（原地开掉再走）
         if (HandleBlindBuriedSearch(pos)) return;                                      // 3.0b 盲踩埋藏宝藏
         if (HandleLockedChestPriority(pos, currentTarget)) return;                     // 3.0c 锁定中的普通宝箱
         if (HandleNormalChest(pos, currentTarget)) return;                             // 3.1 普通宝箱
+        if (HandleRememberedChest(pos, currentTarget)) return;                         // 3.1a 缓存里还没开的宝箱（物件已消失）
         if (HandleRadiantCandlestand(pos, currentTarget, float.MaxValue)) return;      // 3.1b 光耀烛台（宝箱之后，任意距离）
         if (HandleActiveExit(pos, currentTarget)) return;                              // 3.2 激活的传送装置
         if (HandleNearestEnemy(pos, player, currentTarget)) return;                    // 3.3 最近怪物

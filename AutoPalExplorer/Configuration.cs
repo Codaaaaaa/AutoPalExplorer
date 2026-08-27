@@ -92,6 +92,9 @@ namespace AutoPalExplorer
         // 开怪指令的最小重复间隔（毫秒），避免每帧狂点
         public int PullActionIntervalMs { get; set; } = 1500;
 
+        // 是否自动互动光耀烛台：只有勾上才会去点，关掉时完全不管烛台
+        public bool UseRadiantCandlestand { get; set; } = false;
+
         // 光耀烛台：≤此距离(米)时抢在宝箱前优先互动，否则等到所有宝箱之后再处理
         public float RadiantCandlestandNearRange { get; set; } = 30.0f;
 

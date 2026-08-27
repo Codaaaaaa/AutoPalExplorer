@@ -51,6 +51,7 @@ public sealed partial class AutoPalController
         EnsureBmraiOff();
         EnsureRotationOff();
         ignoredChestIds.Clear();
+        ResetChestMemory();       // 本层宝箱坐标缓存 / 出土宝箱状态作废
         lastChestInteractObjectId = 0;
         ResetBlindWalkState();
         ResetStaticObjectsState();
@@ -213,6 +214,10 @@ public sealed partial class AutoPalController
     /// </summary>
     private bool HandleRadiantCandlestand(Vector3 pos, Vector3? currentTarget, float maxDistance)
     {
+        // 没勾「自动点光耀烛台」就完全不管烛台，交回后续逻辑
+        if (!config.UseRadiantCandlestand)
+            return false;
+
         // 本层已点亮过烛台（聊天“点亮了光耀烛台”）就不再互动，交回后续逻辑；换层会重置 hasLitCandle
         if (hasLitCandle)
             return false;
@@ -324,6 +329,172 @@ public sealed partial class AutoPalController
         }
 
         return true; // ⭐ 有埋藏宝藏就只处理这一件事
+    }
+
+    /// <summary>
+    /// 3.0a 刚踩出来的埋藏宝箱：踩出来的一瞬间箱子还在出土动画里（IsTargetable=false），
+    /// 这时候放行给普通宝箱逻辑，就会先跑去开别的箱子、绕一圈才回来开脚下这个。
+    /// 这里接管几帧站在原地把它等出来开掉；开完 / 等超时才交回后续逻辑。
+    /// </summary>
+    private bool HandleUnearthedChest(Vector3 pos, Vector3? currentTarget)
+    {
+        if (!unearthedChestPending)
+            return false;
+
+        var now = DateTime.UtcNow;
+        var elapsed = (now - unearthedChestPendingAt).TotalSeconds;
+
+        // 兜底总超时：无论如何都不能一直卡在这一步
+        if (elapsed > UnearthedChestTimeoutSeconds)
+        {
+            if (config.devMode)
+                log.Information("[AutoPalExplorer] 出土宝箱等待超时（{Sec:0.0}s），交回后续逻辑。", elapsed);
+            unearthedChestPending = false;
+            return false;
+        }
+
+        // 在踩出来的位置附近找那个宝箱（埋藏宝箱出土后 BaseId=2007543）
+        IGameObject? chest = null;
+        var bestDistSq = UnearthedChestSearchRadius * UnearthedChestSearchRadius;
+        foreach (var obj in objectTable)
+        {
+            if (obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventObj
+                && obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Treasure)
+                continue;
+
+            if (!ObjectIds.IsBuriedChest(obj.BaseId))
+                continue;
+
+            if (ignoredChestIds.Contains(obj.GameObjectId))
+                continue;
+
+            var ddx = obj.Position.X - unearthedChestPos.X;
+            var ddz = obj.Position.Z - unearthedChestPos.Z;
+            var dsq = ddx * ddx + ddz * ddz;
+            if (dsq < bestDistSq)
+            {
+                bestDistSq = dsq;
+                chest = obj;
+            }
+        }
+
+        // 还没刷出来：站在原地等一会儿，别被别的箱子勾走
+        if (chest is null)
+        {
+            if (elapsed > UnearthedChestWaitSeconds)
+            {
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] 出土宝箱一直没出现（或已被开走），交回后续逻辑。");
+                unearthedChestPending = false;
+                return false;
+            }
+
+            SetIntent("出土宝箱：等待宝箱出现");
+            if (navigator.IsBusy)
+                navigator.Stop();
+            return true;
+        }
+
+        if (!chest.IsTargetable)
+        {
+            // 已经交互过又变成不可交互：这箱子开完了，收工
+            if (lastChestInteractObjectId == chest.GameObjectId)
+            {
+                MarkChestDone(chest.GameObjectId, "出土宝箱已开启");
+                unearthedChestPending = false;
+                return false;
+            }
+
+            // 出土动画还没放完：站着等；等太久就当被队友开了，放行
+            if (elapsed > UnearthedChestWaitSeconds)
+            {
+                if (config.devMode)
+                    log.Information("[AutoPalExplorer] 出土宝箱迟迟不可交互（{Sec:0.0}s），交回后续逻辑。", elapsed);
+                unearthedChestPending = false;
+                return false;
+            }
+
+            var wdx = chest.Position.X - pos.X;
+            var wdz = chest.Position.Z - pos.Z;
+            if (wdx * wdx + wdz * wdz <= ChestDoneRadius * ChestDoneRadius)
+            {
+                SetIntent("出土宝箱：原地等待可交互");
+                if (navigator.IsBusy)
+                    navigator.Stop();
+            }
+            else if (!navigator.IsBusy || IsDifferentTarget(currentTarget, chest.Position, 1.0f))
+            {
+                SetIntent("出土宝箱：前往");
+                TrySafeMoveTo(chest.Position, TrapAvoidRadiusCfg);
+            }
+
+            return true;
+        }
+
+        // 可交互：走过去 / 开箱（沿用 HandleChest 的移动 + 开箱节流）
+        if (!HandleChest(pos, chest, currentTarget))
+        {
+            unearthedChestPending = false;
+            return false;
+        }
+
+        SetIntent("出土宝箱：前往 / 开启");
+        return true;
+    }
+
+    /// <summary>
+    /// 3.1a 缓存里还没开的宝箱：物件已经从 objectTable 消失（走远被裁剪掉），
+    /// 但本层看到过它的坐标，就照记下的坐标走回去。
+    /// 被队友开掉的箱子由 TickChestMemory 的「就近核销」在 30 米内直接划掉，不用走到脸上；
+    /// 这里到点仍然看不到的兜底判定只是最后一道保险。
+    /// </summary>
+    private bool HandleRememberedChest(Vector3 pos, Vector3? currentTarget)
+    {
+        if (FindRememberedChestToOpen(pos) is not { } mem)
+        {
+            ClearRememberedChestTarget();
+            return false;
+        }
+
+        var dx = mem.Pos.X - pos.X;
+        var dz = mem.Pos.Z - pos.Z;
+        var distSq = dx * dx + dz * dz;
+
+        // 到点了还是没有可开的宝箱对象（否则上面的 HandleNormalChest 就接管了）：当作已经被开过
+        if (distSq <= ChestDoneRadius * ChestDoneRadius)
+        {
+            MarkChestDone(mem.Id, "走到缓存坐标仍找不到宝箱，视为已开");
+            ClearRememberedChestTarget();
+            return false;
+        }
+
+        var now = DateTime.UtcNow;
+        if (rememberedChestTargetId != mem.Id)
+        {
+            rememberedChestTargetId = mem.Id;
+            rememberedChestTargetSince = now;
+
+            if (config.devMode)
+            {
+                log.Information("[AutoPalExplorer] 前往缓存宝箱：BaseId={BaseId}, Pos=({X:0.00}, {Y:0.00}, {Z:0.00})，距离={Dist:0.00}。",
+                    mem.BaseId, mem.Pos.X, mem.Pos.Y, mem.Pos.Z, MathF.Sqrt(distSq));
+            }
+        }
+        else if ((now - rememberedChestTargetSince).TotalSeconds > RememberedChestGiveUpSeconds)
+        {
+            // 走了半天还没到（大概率过不去）：放弃这个，免得卡住探索
+            MarkChestDone(mem.Id, "前往缓存宝箱超时，放弃");
+            ClearRememberedChestTarget();
+            return false;
+        }
+
+        if (!navigator.IsBusy || IsDifferentTarget(currentTarget, mem.Pos, 1.0f))
+        {
+            SetIntent("前往缓存里的宝箱（物件已消失）");
+            TrySafeMoveTo(mem.Pos, TrapAvoidRadiusCfg);
+        }
+
+        return true;
     }
 
     /// <summary>

@@ -174,6 +174,155 @@ public sealed partial class AutoPalController
     private bool IsIgnoredChest(IGameObject chest)
         => ignoredChestIds.Contains(chest.GameObjectId);
 
+    /// <summary>把宝箱标记为「不用再管了」（已开 / 被队友开 / 魔陶器满）。缓存里也一并作废。</summary>
+    private bool MarkChestDone(ulong gameObjectId, string reason)
+    {
+        if (gameObjectId == 0)
+            return false;
+
+        if (!ignoredChestIds.Add(gameObjectId))
+            return false;
+
+        if (rememberedChestTargetId == gameObjectId)
+            ClearRememberedChestTarget();
+
+        if (config.devMode)
+            log.Information("[AutoPalExplorer] 宝箱 GameObjectId={Id} 标记为已处理（{Reason}）。", gameObjectId, reason);
+
+        return true;
+    }
+
+    /// <summary>
+    /// 每帧刷新本层宝箱坐标缓存：视野里出现过的宝箱都记下 ID / BaseId / 坐标，
+    /// 之后即使物件被裁剪掉（走远了看不到），也还知道它在哪。换层时清空。
+    /// 同时做「就近核销」：人在缓存坐标 RememberedChestVerifyRadius 米内还看不到这个箱子，
+    /// 就说明它已经被队友开走了，不用真的走到脸上才知道。
+    /// </summary>
+    private void TickChestMemory(Vector3 playerPos)
+    {
+        var now = DateTime.UtcNow;
+
+        foreach (var obj in objectTable)
+        {
+            if (obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventObj
+                && obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Treasure)
+                continue;
+
+            if (!ObjectIds.IsAnyChest(obj.BaseId))
+                continue;
+
+            if (!rememberedChests.TryGetValue(obj.GameObjectId, out var mem))
+            {
+                mem = new RememberedChest
+                {
+                    Id = obj.GameObjectId,
+                    FirstSeenAt = now,
+                };
+                rememberedChests[obj.GameObjectId] = mem;
+
+                if (config.devMode)
+                {
+                    log.Information("[AutoPalExplorer] 记录宝箱坐标：BaseId={BaseId}, Id={Id}, Pos=({X:0.00}, {Y:0.00}, {Z:0.00})。",
+                        obj.BaseId, obj.GameObjectId, obj.Position.X, obj.Position.Y, obj.Position.Z);
+                }
+            }
+
+            // 埋藏的宝藏踩出来后 BaseId 会从 2007542 变成 2007543，这里跟着更新
+            mem.BaseId = obj.BaseId;
+            mem.Pos = obj.Position;
+            mem.LastSeenAt = now;
+            mem.MissingSince = DateTime.MinValue;
+        }
+
+        // 就近核销：进到 RememberedChestVerifyRadius 米内还没在 objectTable 里看到它，
+        // 连续 RememberedChestMissingConfirmSeconds 秒都是这样，就判定已经被开走了。
+        var verifyDistSq = RememberedChestVerifyRadius * RememberedChestVerifyRadius;
+        foreach (var mem in rememberedChests.Values)
+        {
+            if (mem.LastSeenAt == now)       // 本帧刚看到
+                continue;
+
+            if (ignoredChestIds.Contains(mem.Id))
+                continue;
+
+            if (!ShouldOpenChest(mem.BaseId)) // 配置里本来就不开的箱子，只留坐标不核销
+                continue;
+
+            var dx = mem.Pos.X - playerPos.X;
+            var dz = mem.Pos.Z - playerPos.Z;
+            if (dx * dx + dz * dz > verifyDistSq)
+            {
+                // 离得远，看不到很正常（物件被裁剪掉），不做判断
+                mem.MissingSince = DateTime.MinValue;
+                continue;
+            }
+
+            if (mem.MissingSince == DateTime.MinValue)
+            {
+                mem.MissingSince = now;
+                continue;
+            }
+
+            if ((now - mem.MissingSince).TotalSeconds >= RememberedChestMissingConfirmSeconds)
+                MarkChestDone(mem.Id, $"{RememberedChestVerifyRadius:0} 米内看不到这个箱子，判定已被开走");
+        }
+    }
+
+    /// <summary>供 UI 查看的本层宝箱缓存快照（已处理的箱子也留着，只是标 Done）。</summary>
+    public List<(uint BaseId, Vector3 Pos, bool Done, DateTime LastSeenAt)> GetRememberedChests()
+    {
+        var list = new List<(uint, Vector3, bool, DateTime)>(rememberedChests.Count);
+        foreach (var mem in rememberedChests.Values)
+            list.Add((mem.BaseId, mem.Pos, ignoredChestIds.Contains(mem.Id), mem.LastSeenAt));
+        return list;
+    }
+
+    private void ClearRememberedChestTarget()
+    {
+        rememberedChestTargetId = 0;
+        rememberedChestTargetSince = DateTime.MinValue;
+    }
+
+    /// <summary>清空本层宝箱缓存（换层）。</summary>
+    private void ResetChestMemory()
+    {
+        rememberedChests.Clear();
+        ClearRememberedChestTarget();
+        unearthedChestPending = false;
+        unearthedChestPendingAt = DateTime.MinValue;
+    }
+
+    /// <summary>
+    /// 从缓存里挑一个还没处理过、当前又看不见的宝箱（最近的一个）。
+    /// 看得见的箱子交给 FindNextChestToOpen 就行，这里只兜「物件已经消失」的情况。
+    /// </summary>
+    private RememberedChest? FindRememberedChestToOpen(Vector3 playerPos)
+    {
+        RememberedChest? best = null;
+        var bestDistSq = float.MaxValue;
+
+        foreach (var mem in rememberedChests.Values)
+        {
+            if (ignoredChestIds.Contains(mem.Id))
+                continue;
+
+            if (!ShouldOpenChest(mem.BaseId))
+                continue;
+
+            var dx = mem.Pos.X - playerPos.X;
+            var dz = mem.Pos.Z - playerPos.Z;
+            var distSq = dx * dx + dz * dz;
+
+            if (distSq < bestDistSq)
+            {
+                bestDistSq = distSq;
+                best = mem;
+            }
+        }
+
+        return best;
+    }
+
     private bool HandleChest(Vector3 playerPos, IGameObject chest, Vector3? currentTarget)
     {
         if (IsIgnoredChest(chest))
@@ -259,10 +408,7 @@ public sealed partial class AutoPalController
             // 如果已经不可交互且在 ChestDoneRadius 范围内，认为已经被开过，加入 ignore 并解锁
             if (!lockedChestObj.IsTargetable && distSq <= ChestDoneRadius * ChestDoneRadius && !ObjectIds.IsBuriedChest(lockedChestObj.BaseId))
             {
-                if (ignoredChestIds.Add(lockedChestObj.GameObjectId) && config.devMode)
-                {
-                    log.Information("[AutoPalExplorer] 锁定宝箱在 ChestDoneRadius 内且不可交互，视为已开，加入忽略列表并解锁。");
-                }
+                MarkChestDone(lockedChestObj.GameObjectId, "锁定宝箱在开箱范围内且不可交互，视为已开");
                 ClearLockedChest();
                 return false;
             }
@@ -299,11 +445,7 @@ public sealed partial class AutoPalController
         else
         {
             // 距离原始宝箱位置 <= 100 且仍然看不到这个箱子：按你说的，当作已经开过
-            if (lockedChestId != 0 && ignoredChestIds.Add(lockedChestId))
-            {
-                if (config.devMode)
-                    log.Information("[AutoPalExplorer] 锁定宝箱在100范围内仍不可见，视为已开，加入忽略列表。");
-            }
+            MarkChestDone(lockedChestId, "锁定宝箱在给定范围内仍不可见，视为已开");
 
             ClearLockedChest();
             // 返回 false，让后面的门/怪逻辑可以接管
@@ -334,13 +476,7 @@ public sealed partial class AutoPalController
             // 说明 99% 是刚开完的箱子（或者被队友开完），直接加入 ignore，避免一直把它当目标。
             if (!obj.IsTargetable && distSq <= ChestDoneRadius * ChestDoneRadius && !ObjectIds.IsBuriedChest(obj.BaseId))
             {
-                if (ignoredChestIds.Add(obj.GameObjectId) && config.devMode)
-                {
-                    log.Information(
-                        "[AutoPalExplorer] 宝箱 BaseId={BaseId} 在 ChestDoneRadius 内且不可交互，视为已开，加入 ignore 列表。",
-                        obj.BaseId
-                    );
-                }
+                MarkChestDone(obj.GameObjectId, $"BaseId={obj.BaseId} 在开箱范围内且不可交互，视为已开");
                 continue;
             }
 

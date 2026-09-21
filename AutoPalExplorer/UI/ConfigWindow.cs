@@ -797,15 +797,16 @@ namespace AutoPalExplorer
         }
 
         /// <summary>
-        /// 传送装置激活检测（DeepDungeonMap 图标 PartId）调试面板：
-        /// 显示最近一次节点扫描卡在哪一步，并提供 dump 节点树 / Addon 列表的按钮。
+        /// 传送装置激活检测调试面板：显示实时判定用到的三个数据源
+        /// （游戏内 PassageProgress / DeepDungeonMap 图标 PartId / 聊天提示），
+        /// 节点扫不到时显示卡在哪一步，并提供 dump 节点树 / Addon 列表的按钮。
         /// </summary>
         private void DrawExitDetectDebug()
         {
-            ImGui.TextUnformatted("传送装置检测（UI 节点）：");
+            ImGui.TextUnformatted("传送装置检测（实时）：");
 
             var status = controller.ExitDetectStatus;
-            var ok = status.StartsWith("√") || status.StartsWith("已激活");
+            var ok = controller.ExitActivatedNow;
             ImGui.PushStyleColor(ImGuiCol.Text, ok
                 ? new Vector4(0.2f, 1.0f, 0.2f, 1.0f)
                 : new Vector4(1.0f, 0.5f, 0.3f, 1.0f));
@@ -818,7 +819,10 @@ namespace AutoPalExplorer
                 ImGui.TextDisabled($"更新于 {controller.ExitDetectStatusAt:HH:mm:ss}（{ago.TotalSeconds:0.0}s 前）");
             }
 
-            ImGui.TextDisabled("节点路径 DeepDungeonMap / Res 1 / Res 16 / Comp 18 / Image 2，PartId==10 视为已激活");
+            ImGui.TextDisabled("首选数据源：InstanceContentDeepDungeon.PassageProgress（不依赖地图 UI，每帧读）");
+            ImGui.TextDisabled($"PassageProgress：{(controller.ExitPassageProgress < 0 ? "(读不到)" : controller.ExitPassageProgress.ToString())}"
+                + $" / 满值 {controller.ExitPassageFullProgress}");
+            ImGui.TextDisabled("兜底数据源：DeepDungeonMap / Res 1 / Res 16 / Comp 18 / Image 2，PartId==10 视为已激活");
             ImGui.TextDisabled($"最近读到的 PartId：{(controller.ExitDetectPartId < 0 ? "(未读到)" : controller.ExitDetectPartId.ToString())}");
 
             if (ImGui.Button("立即检测一次"))

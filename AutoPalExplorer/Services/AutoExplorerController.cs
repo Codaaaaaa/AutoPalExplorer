@@ -83,6 +83,9 @@ public sealed partial class AutoPalController
     // 玩家阵亡后点掉复活确认窗口（SelectYesno）的节流
     private DateTime nextReviveAddonFireAt = DateTime.MinValue;
 
+    // 换层看门狗：「地图ID + 游戏内层数」指纹，变了就当换层（不再只依赖聊天「第N朝圣路」）
+    private long lastFloorStamp = -1;
+
     // ==== 99 / 100 层特殊收尾流程 ====
     // 当前层数（由聊天“第N朝圣路”解析，用于 99/100 层特殊流程）
     private int currentFloor;
@@ -416,6 +419,7 @@ public sealed partial class AutoPalController
         ignoredChestIds.Clear();
         lastChestInteractObjectId = 0;
         bossExitReachedAt = DateTime.MinValue;
+        lastFloorStamp = -1;
         ResetBlindWalkState();
         ResetStaticObjectsState();
         ResetRoomState();
@@ -467,6 +471,7 @@ public sealed partial class AutoPalController
         isBossFloor = false;
         isBossFloorQueueing = false;
         bossExitReachedAt = DateTime.MinValue;
+        lastFloorStamp = -1;
         ResetBlindWalkState();
         ResetStaticObjectsState();
         ResetRoomState();
@@ -559,14 +564,17 @@ public sealed partial class AutoPalController
             return;
         }
 
+        // ===== 每帧状态维护（仅副作用，不接管本帧） =====
+        // 换层判定必须排在本层缓存刷新之前，否则新一层刚记下的宝箱 / 房间数据会被紧接着的重置清掉
+        TickFloorChangeWatchdog();           // 换层看门狗（地图ID + 游戏内层数指纹）
+        HandleLevelChangeReset();            // 换层重置（nextLevelBool 触发）
+
         UpdateStaticObjectPositions();
         TickChestMemory(pos);                // 本层宝箱坐标缓存（消失后还知道在哪 + 就近核销）
         TickRoomState(player, pos);          // 房间图：换层检测 + 房间中心在线标定
 
-        // ===== 每帧状态维护（仅副作用，不接管本帧） =====
-        HandleLevelChangeReset();            // 换层重置（nextLevelBool 触发）
         TickPomanderUsage();                 // 0.5 使用魔陶器
-        TickExitActivationFromAddon();       // 0.6 传送装置激活检测（DeepDungeonMap 图标 PartId）
+        TickExitActivation();                // 0.6 传送装置激活检测（实时：PassageProgress + 地图图标 + 聊天）
 
         // ===== 优先级处理链：从高到低，任意一个接管本帧即 return =====
 

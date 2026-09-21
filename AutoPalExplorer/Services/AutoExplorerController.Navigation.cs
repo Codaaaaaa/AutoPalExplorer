@@ -213,6 +213,6 @@ public sealed partial class AutoPalController
         savedRegenerationPos = null;
         exitActivatedByChat = false;
         regenerationActivated = false;
-        lastLoggedExitPartId = -1;
+        ResetExitActivationState();   // 传送装置检测：上一层的图标结论 / 标定日志状态作废
     }
 }

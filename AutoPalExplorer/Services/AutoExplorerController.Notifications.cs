@@ -34,9 +34,9 @@ namespace AutoPalExplorer.Services;
 public sealed partial class AutoPalController
 {
     /// <summary>
-    /// 标记传送装置已激活。
-    /// 主要由 TickExitActivationFromAddon（DeepDungeonMap 图标 PartId==10）调用，
-    /// 聊天“传送装置启动了”作为兜底也会调到这里。
+    /// 收到聊天“传送装置启动了”：标记传送装置已激活。
+    /// 这只是三个数据源里最弱的一个（队友触发时可能收不到），真正的判定在
+    /// TickExitActivation 里每帧重算；本层换层时由 ResetStaticObjectsState 清掉。
     /// </summary>
     public void NotifyExitActivated()
     {

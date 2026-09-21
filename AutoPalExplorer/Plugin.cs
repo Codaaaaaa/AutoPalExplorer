@@ -46,7 +46,6 @@ public sealed class Plugin : IDalamudPlugin
     private readonly Configuration config;
     private readonly AutoPalController controller;
     private readonly PomanderManager pomanderManager;
-    private readonly bool isAllowed;
     // ⭐ 新增：UI 封装类
     private readonly ConfigWindow configWindow;
     private readonly RoomMapWindow roomMapWindow;
@@ -55,9 +54,6 @@ public sealed class Plugin : IDalamudPlugin
     {
         // 初始化 ECommons（Callback / TaskManager / Addon 辅助）
         ECommonsMain.Init(PluginInterface, this);
-
-        // 白名单检查
-        isAllowed = WhiteListCheck.IsPlayerAllowed(PlayerState);
 
         // 加载配置
         config = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
@@ -128,49 +124,45 @@ public sealed class Plugin : IDalamudPlugin
     private void OnCommand(string command, string args)
     {
         var arg = args.Trim().ToLowerInvariant();
-        if (isAllowed)
+        switch (arg)
         {
-            switch (arg)
-            {
-                case "start":
-                    controller.Start();
-                    ChatGui.Print("[AutoPalExplorer] Started.");
-                    break;
+            case "start":
+                controller.Start();
+                ChatGui.Print("[AutoPalExplorer] Started.");
+                break;
 
-                case "stop":
+            case "stop":
+                controller.Stop();
+                ChatGui.Print("[AutoPalExplorer] Stopped.");
+                break;
+
+            case "config":
+                // ⭐ 打开配置窗口
+                configWindow.Open();
+                break;
+
+            case "map":
+                roomMapWindow.Toggle();
+                break;
+
+            case "toggle":
+            case "":
+                if (controller.IsRunning)
+                {
                     controller.Stop();
                     ChatGui.Print("[AutoPalExplorer] Stopped.");
-                    break;
+                }
+                else
+                {
+                    controller.Start();
+                    ChatGui.Print("[AutoPalExplorer] Started.");
+                }
+                break;
 
-                case "config":
-                    // ⭐ 打开配置窗口
-                    configWindow.Open();
-                    break;
-
-                case "map":
-                    roomMapWindow.Toggle();
-                    break;
-
-                case "toggle":
-                case "":
-                    if (controller.IsRunning)
-                    {
-                        controller.Stop();
-                        ChatGui.Print("[AutoPalExplorer] Stopped.");
-                    }
-                    else
-                    {
-                        controller.Start();
-                        ChatGui.Print("[AutoPalExplorer] Started.");
-                    }
-                    break;
-
-                default:
-                    ChatGui.Print("[AutoPalExplorer] Usage: /autopal [start|stop|toggle|map]");
-                    break;
-            }
+            default:
+                ChatGui.Print("[AutoPalExplorer] Usage: /autopal [start|stop|toggle|map]");
+                break;
         }
-        
     }
 
     private void OnChatMessage(IHandleableChatMessage chatMessage)
@@ -299,15 +291,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private void DrawUi()
     {
-        if (isAllowed)
-        {
-            configWindow.Draw();
-            roomMapWindow.Draw();
-        }
-        else
-        {
-            // Log.Information("Test");
-            configWindow.DrawSimple();
-        }
+        configWindow.Draw();
+        roomMapWindow.Draw();
     }
 }

@@ -39,6 +39,38 @@ public static unsafe class RoomGraph
         return ef->GetInstanceContentDeepDungeon();
     }
 
+    /// <summary>
+    /// 传送装置（下一层入口）的激活进度，直接读游戏内 InstanceContentDeepDungeon.PassageProgress。
+    ///
+    /// 这是不依赖地图 UI 的实时真值：地图上那个传送装置图标的 PartId 就是按这个值画出来的，
+    /// 所以“没有地图 UI 的层”也能靠它判断传送装置到底激活没有。
+    /// 不在深层迷宫里（或数据还没刷出来）时返回 false。
+    /// </summary>
+    public static bool TryGetPassageProgress(out int progress)
+    {
+        progress = -1;
+
+        var dd = GetDeepDungeon();
+        if (dd == null)
+            return false;
+
+        progress = dd->PassageProgress;
+        return true;
+    }
+
+    /// <summary>游戏内当前层数。切图 / 读条中拿不到时返回 false。</summary>
+    public static bool TryGetFloor(out int floor)
+    {
+        floor = 0;
+
+        var dd = GetDeepDungeon();
+        if (dd == null)
+            return false;
+
+        floor = dd->Floor;
+        return floor > 0;
+    }
+
     public static RoomFlags GetFlags(InstanceContentDeepDungeon* dd, int roomIndex)
     {
         if (dd == null || (uint)roomIndex >= MaxRooms)

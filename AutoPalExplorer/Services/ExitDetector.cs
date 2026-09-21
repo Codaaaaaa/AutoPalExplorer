@@ -12,8 +12,10 @@ namespace AutoPalExplorer.Services;
 /// 识别：
 /// - 传送装置（同一个 DataId，由 ExitActivated 区分状态）
 /// - 宝箱
-/// ExitActivated 由控制器标记：主要来源是 DeepDungeonMap 图标 PartId==10（见 AutoExplorerController.ExitActivation），
-/// 聊天“传送装置启动了”作为兜底，两者都走 MarkExitActivated()。
+/// ExitActivated 由控制器每帧写入（见 AutoExplorerController.ExitActivation.TickExitActivation）：
+/// 主要来源是游戏内 InstanceContentDeepDungeon.PassageProgress（实时、不依赖地图 UI），
+/// 地图图标 PartId==10 与聊天“传送装置启动了”作为兜底。
+/// 注意这里是「当前状态」而不是「一次性锁存」：控制器判定未激活时会把它写回 false。
 /// </summary>
 public sealed class ExitDetector
 {
@@ -41,18 +43,20 @@ public sealed class ExitDetector
     {
         Exit = null;
         Chest = null;
-        ExitActivated = false;
-        log.Information("[AutoPalExplorer] Exit marked deactivated.");
+        SetExitActivated(false);
     }
 
-    public void MarkExitActivated()
+    /// <summary>写入传送装置当前的激活状态（真值来自控制器，变化时才打日志）。</summary>
+    public void SetExitActivated(bool activated)
     {
-        if (!ExitActivated)
-        {
-            ExitActivated = true;
-            log.Information("[AutoPalExplorer] Exit marked as activated.");
-        }
+        if (ExitActivated == activated)
+            return;
+
+        ExitActivated = activated;
+        log.Information("[AutoPalExplorer] Exit marked as {State}.", activated ? "activated" : "deactivated");
     }
+
+    public void MarkExitActivated() => SetExitActivated(true);
 
     /// <summary>
     /// 每帧按玩家位置刷新最近 Exit 和 Chest。

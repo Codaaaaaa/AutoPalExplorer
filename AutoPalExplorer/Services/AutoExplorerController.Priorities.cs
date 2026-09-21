@@ -33,6 +33,37 @@ namespace AutoPalExplorer.Services;
 
 public sealed partial class AutoPalController
 {
+    /// <summary>
+    /// 换层看门狗：直接盯游戏内的「地图ID + 层数」，指纹一变就当换层。
+    ///
+    /// 以前换层完全依赖聊天「第N朝圣路」。打完 Boss 走排队流程进 11 / 21 / 31… 层时
+    /// （Boss层 → 下一层入口 1280 → 新一段地图）那行聊天不一定收得到，
+    /// 于是 HandleLevelChangeReset 不触发，上一层的状态被整个带进新一层——
+    /// 最要命的是「传送装置已激活」这个结论，导致开完宝箱就直接跑去还没激活的传送装置。
+    ///
+    /// 读不到层数（切图 / 读条中、或不在深宫）时保持上一次指纹不动，避免误判换层。
+    /// </summary>
+    private void TickFloorChangeWatchdog()
+    {
+        if (!RoomGraph.TryGetFloor(out var floor))
+            return;
+
+        var stamp = ((long)clientState.TerritoryType << 8) | (uint)floor;
+        if (stamp == lastFloorStamp)
+            return;
+
+        var first = lastFloorStamp < 0;
+        lastFloorStamp = stamp;
+
+        if (config.devMode)
+        {
+            log.Information("[AutoPalExplorer] 换层看门狗触发：Territory={Territory}, Floor={Floor}（{Reason}）。",
+                clientState.TerritoryType, floor, first ? "首次读到" : "指纹变化");
+        }
+
+        nextLevelActivated();
+    }
+
     /// <summary>换层重置：由 nextLevelBool 触发，清理上一层的探索 / 宝箱 / 盲踩等状态。</summary>
     private void HandleLevelChangeReset()
     {
@@ -649,9 +680,10 @@ public sealed partial class AutoPalController
             exitPos = activeExit.Position;
             savedExitPos = activeExit.Position; // 顺便更新缓存
         }
-        else if (exitActivatedByChat && savedExitPos is { } cachedExit)
+        else if (exitDetector.ExitActivated && savedExitPos is { } cachedExit)
         {
-            // ExitDetector 找不到对象（走太远）时，用聊天激活 + 缓存坐标兜底
+            // ExitDetector 找不到对象（走太远）时，用「已激活 + 缓存坐标」兜底。
+            // 这里跟着实时状态走，不能再用一次性锁存的 exitActivatedByChat。
             exitPos = cachedExit;
         }
 

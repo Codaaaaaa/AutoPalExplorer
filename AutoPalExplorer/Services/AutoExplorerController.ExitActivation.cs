@@ -9,13 +9,19 @@ using static ECommons.GenericHelpers;
 namespace AutoPalExplorer.Services;
 
 /// <summary>
-/// 传送装置激活检测（UI 节点版）。
+/// 传送装置激活检测（实时判定）。
 ///
-/// 以前只靠聊天日志“传送装置启动了”判断，队友触发时聊天可能收不到 / 被过滤。
-/// 现改为轮询 DeepDungeonMap 里的传送装置图标：
-///   Res Node 1 -> Res Node 16 -> Component Node 18 -> Image Node 2
-/// 该 Image Node 的 texture PartId == 10 即表示传送装置已激活。
-/// 聊天检测保留为兜底（见 Plugin.OnChatMessage -> NotifyExitActivated）。
+/// 真值来源按可靠度排：
+///   1. 游戏内 InstanceContentDeepDungeon.PassageProgress —— 每帧可读、不依赖任何 UI，
+///      地图上那个传送装置图标本来就是按这个值画的，所以这是最靠谱的一手数据；
+///   2. DeepDungeonMap 里的传送装置图标（PartId==10 视为满格）：
+///      Res Node 1 -> Res Node 16 -> Component Node 18 -> Image Node 2；
+///   3. 聊天“传送装置启动了”（见 Plugin.OnChatMessage -> NotifyExitActivated），队友触发时可能收不到。
+///
+/// ⚠ 这里是「实时状态」而不是「一次性锁存」：以前判定一次激活后就再也不轮询、也永远不会写回未激活，
+/// 只能靠聊天“第N朝圣路”触发的换层重置来清。打完 Boss 排队进 11/21/31… 层时那行聊天不一定收得到，
+/// 于是上一层“已激活”的结论被带进新一层，开完宝箱就直接跑去传送装置——本文件连同
+/// TickFloorChangeWatchdog（换层看门狗）一起修掉这个问题。
 ///
 /// 扫不到节点时，配置窗口「内部变量 -> 传送装置检测」里会显示卡在哪一步，
 /// 并可以一键 dump 当前 Addon 的完整节点树 / 已加载 Addon 列表来核对 id。
@@ -40,65 +46,135 @@ public sealed partial class AutoPalController
 
     // devMode 下只在 PartId 变化时打日志，避免刷屏
     private int lastLoggedExitPartId = -1;
+    private int lastLoggedPassageProgress = -1;
+
+    /// <summary>
+    /// PassageProgress 的满值。不同版本这个字段的量程可能是 0-10 或 0-100，
+    /// 默认按 100 算；只要某一帧同时读到了地图图标满格（PartId==10），
+    /// 就用当时的 progress 把满值标定成真实量程。
+    /// </summary>
+    private int passageFullProgress = 100;
+
+    /// <summary>地图图标最近一次给出的结论（null = 一次都没读到，读不到时沿用上一次）。</summary>
+    private bool? exitIconActive;
+
+    /// <summary>地图图标读取失败时卡在哪一步（null = 上一次读成功了）。</summary>
+    private string? exitIconFailReason;
 
     // ===== 调试用（配置窗口「内部变量」里显示）=====
 
-    /// <summary>最近一次节点扫描的结果 / 失败原因。</summary>
+    /// <summary>最近一次检测的结果 / 失败原因。</summary>
     public string ExitDetectStatus { get; private set; } = "(尚未检测)";
 
-    /// <summary>最近一次节点扫描的时间。</summary>
+    /// <summary>最近一次检测的时间。</summary>
     public DateTime ExitDetectStatusAt { get; private set; } = DateTime.MinValue;
 
     /// <summary>最近一次成功读到的 PartId，-1 表示没读到。</summary>
     public int ExitDetectPartId { get; private set; } = -1;
 
+    /// <summary>最近一次读到的 PassageProgress，-1 表示没读到。</summary>
+    public int ExitPassageProgress { get; private set; } = -1;
+
+    /// <summary>当前认定的 PassageProgress 满值（激活阈值）。</summary>
+    public int ExitPassageFullProgress => passageFullProgress;
+
+    /// <summary>传送装置当前是否已激活（实时）。</summary>
+    public bool ExitActivatedNow => exitDetector.ExitActivated;
+
     /// <summary>手动 dump 出来的节点树 / Addon 列表。</summary>
     public IReadOnlyList<string> ExitDebugDumpLines => exitDebugDumpLines;
     private readonly List<string> exitDebugDumpLines = new();
 
-    /// <summary>每帧调用：轮询 DeepDungeonMap 的传送装置图标，PartId==10 则标记已激活。</summary>
-    private void TickExitActivationFromAddon()
+    /// <summary>换层时清掉本层的检测结论（由 ResetStaticObjectsState 调用）。</summary>
+    private void ResetExitActivationState()
     {
-        // 已经激活过就不用再读了（换层由 ResetStaticObjectsState / ExitDetector.Reset 清掉）
-        if (exitActivatedByChat && exitDetector.ExitActivated)
-        {
-            SetExitDetectStatus("已激活（本层不再轮询）");
-            return;
-        }
-
-        var now = DateTime.Now;
-        if (now < nextExitAddonPollAt)
-            return;
-        nextExitAddonPollAt = now.AddSeconds(ExitAddonPollSeconds);
-
-        PollExitActivation();
+        exitIconActive = null;
+        exitIconFailReason = null;
+        ExitDetectPartId = -1;
+        ExitPassageProgress = -1;
+        lastLoggedExitPartId = -1;
+        lastLoggedPassageProgress = -1;
+        nextExitAddonPollAt = DateTime.MinValue;
+        SetExitDetectStatus("(换层，等待重新检测)");
     }
 
     /// <summary>
-    /// 立即执行一次节点扫描（配置窗口的「立即检测一次」按钮也走这里）。
-    /// 命中 PartId==10 时同样会标记激活。
+    /// 每帧调用：重新判定一次传送装置是否已激活，并把结论实时写回 ExitDetector。
+    /// 三个来源取「或」——任何一个说激活就算激活，全都说没激活（或全都读不到）才算没激活。
+    /// </summary>
+    private void TickExitActivation()
+    {
+        var now = DateTime.Now;
+
+        // 1) 游戏数据：便宜，每帧都读
+        var hasProgress = RoomGraph.TryGetPassageProgress(out var progress);
+        ExitPassageProgress = hasProgress ? progress : -1;
+
+        // 2) 地图 UI 图标：要遍历节点树，按 0.25s 节流；读不到时沿用上一次结论
+        var hasPartId = false;
+        uint partId = 0;
+        if (now >= nextExitAddonPollAt)
+        {
+            nextExitAddonPollAt = now.AddSeconds(ExitAddonPollSeconds);
+            hasPartId = TryReadExitIconPartId(out partId);
+            if (hasPartId)
+            {
+                ExitDetectPartId = (int)partId;
+                exitIconActive = partId == ExitActivePartId;
+
+                if (config.devMode && (int)partId != lastLoggedExitPartId)
+                {
+                    lastLoggedExitPartId = (int)partId;
+                    log.Information("[AutoPalExplorer] [传送检测] {Addon} 图标 PartId={PartId}。", ExitMapAddonName, partId);
+                }
+            }
+        }
+
+        // 两个数据源同时可读、且图标是满格时，顺便把 progress 的满值标定出来
+        if (hasProgress && hasPartId && partId == ExitActivePartId && progress > 0 && progress != passageFullProgress)
+        {
+            log.Information("[AutoPalExplorer] [传送检测] 标定 PassageProgress 满值：{Old} -> {New}（图标 PartId=10）。",
+                passageFullProgress, progress);
+            passageFullProgress = progress;
+        }
+
+        var progressActive = hasProgress && progress >= passageFullProgress;
+        var active = progressActive || exitIconActive == true || exitActivatedByChat;
+
+        if (config.devMode && hasProgress && progress != lastLoggedPassageProgress)
+        {
+            lastLoggedPassageProgress = progress;
+            log.Information("[AutoPalExplorer] [传送检测] PassageProgress={Progress}/{Full}。", progress, passageFullProgress);
+        }
+
+        SetExitDetectStatus(BuildExitDetectStatus(hasProgress, progress, active));
+        exitDetector.SetExitActivated(active);
+    }
+
+    private string BuildExitDetectStatus(bool hasProgress, int progress, bool active)
+    {
+        var sb = new StringBuilder();
+        sb.Append(active ? "√ 已激活" : "× 未激活");
+        sb.Append("｜游戏数据 PassageProgress=");
+        sb.Append(hasProgress ? $"{progress}/{passageFullProgress}" : "(读不到)");
+        sb.Append("｜地图图标=");
+        sb.Append(exitIconActive is null
+            ? "(读不到)"
+            : $"PartId={ExitDetectPartId}（{(exitIconActive == true ? "满格" : "未满")}）");
+        if (exitIconFailReason is not null)
+            sb.Append($"｜{exitIconFailReason}");
+        if (exitActivatedByChat)
+            sb.Append("｜聊天已报激活");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// 立即执行一次判定（配置窗口的「立即检测一次」按钮走这里）。
     /// </summary>
     public void PollExitActivation()
     {
-        if (!TryReadExitIconPartId(out var partId))
-            return;
-
-        ExitDetectPartId = (int)partId;
-        SetExitDetectStatus($"√ 读到 PartId={partId}（激活阈值 {ExitActivePartId}）");
-
-        if (config.devMode && partId != lastLoggedExitPartId)
-        {
-            lastLoggedExitPartId = (int)partId;
-            log.Information("[AutoPalExplorer] [传送检测] {Addon} 图标 PartId={PartId}。", ExitMapAddonName, partId);
-        }
-
-        if (partId != ExitActivePartId)
-            return;
-
-        if (config.devMode)
-            log.Information("[AutoPalExplorer] [传送检测] PartId={PartId}，判定传送装置已激活。", partId);
-
-        NotifyExitActivated();
+        nextExitAddonPollAt = DateTime.MinValue;
+        TickExitActivation();
     }
 
     private void SetExitDetectStatus(string status)
@@ -109,22 +185,21 @@ public sealed partial class AutoPalController
 
     /// <summary>
     /// 按节点路径读出传送装置图标当前的 texture PartId。
-    /// 读不到时返回 false，并把卡住的那一步写进 <see cref="ExitDetectStatus"/>。
+    /// 读不到时返回 false，并把卡住的那一步写进 <see cref="exitIconFailReason"/>（会拼进 ExitDetectStatus）。
     /// </summary>
     private unsafe bool TryReadExitIconPartId(out uint partId)
     {
         partId = 0;
-        ExitDetectPartId = -1;
 
         if (!TryGetAddonByName<AtkUnitBase>(ExitMapAddonName, out var addon) || addon == null)
         {
-            SetExitDetectStatus($"× 找不到 Addon「{ExitMapAddonName}」（未加载）");
+            exitIconFailReason = $"× 找不到 Addon「{ExitMapAddonName}」（未加载）";
             return false;
         }
 
         if (!IsAddonReady(addon))
         {
-            SetExitDetectStatus($"× Addon「{ExitMapAddonName}」已加载但未就绪（IsVisible={addon->IsVisible}）");
+            exitIconFailReason = $"× Addon「{ExitMapAddonName}」已加载但未就绪（IsVisible={addon->IsVisible}）";
             return false;
         }
 
@@ -132,8 +207,8 @@ public sealed partial class AutoPalController
         var root = addon->GetNodeById(ExitMapRootNodeId);
         if (root == null)
         {
-            SetExitDetectStatus($"× 找不到 ResNode {ExitMapRootNodeId}"
-                + $"（addon 顶层节点数={addon->UldManager.NodeListCount}）");
+            exitIconFailReason = $"× 找不到 ResNode {ExitMapRootNodeId}"
+                + $"（addon 顶层节点数={addon->UldManager.NodeListCount}）";
             return false;
         }
 
@@ -144,8 +219,8 @@ public sealed partial class AutoPalController
 
         if (node16 == null)
         {
-            SetExitDetectStatus($"× ResNode {ExitMapRootNodeId} 下找不到节点 {ExitMapNode16Id}"
-                + $"（{DescribeNode(root)}）");
+            exitIconFailReason = $"× ResNode {ExitMapRootNodeId} 下找不到节点 {ExitMapNode16Id}"
+                + $"（{DescribeNode(root)}）";
             return false;
         }
 
@@ -153,8 +228,8 @@ public sealed partial class AutoPalController
         var node18 = FindDescendantById(node16, ExitMapNode18Id);
         if (node18 == null)
         {
-            SetExitDetectStatus($"× 节点 {ExitMapNode16Id} 下找不到节点 {ExitMapNode18Id}"
-                + $"（{DescribeNode(node16)}）");
+            exitIconFailReason = $"× 节点 {ExitMapNode16Id} 下找不到节点 {ExitMapNode18Id}"
+                + $"（{DescribeNode(node16)}）";
             return false;
         }
 
@@ -162,18 +237,19 @@ public sealed partial class AutoPalController
         var imageNode = FindDescendantById(node18, ExitMapImageNodeId);
         if (imageNode == null)
         {
-            SetExitDetectStatus($"× 节点 {ExitMapNode18Id} 下找不到节点 {ExitMapImageNodeId}"
-                + $"（{DescribeNode(node18)}）");
+            exitIconFailReason = $"× 节点 {ExitMapNode18Id} 下找不到节点 {ExitMapImageNodeId}"
+                + $"（{DescribeNode(node18)}）";
             return false;
         }
 
         if (imageNode->Type != NodeType.Image)
         {
-            SetExitDetectStatus($"× 节点 {ExitMapImageNodeId} 不是 Image 节点（Type={imageNode->Type}）");
+            exitIconFailReason = $"× 节点 {ExitMapImageNodeId} 不是 Image 节点（Type={imageNode->Type}）";
             return false;
         }
 
         partId = ((AtkImageNode*)imageNode)->PartId;
+        exitIconFailReason = null;
         return true;
     }
 

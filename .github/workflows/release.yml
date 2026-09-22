@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency: release
+
+jobs:
+  release:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v5
+
+    - name: Checkout Pal
+      uses: actions/checkout@v5
+      with:
+        repository: Codaaaaaa/Pal
+        ref: main
+        token: ${{ secrets.PAL_TOKEN }}
+        path: Pal
+
+    - name: Install .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: 10.0.x
+
+    - name: Download Dalamud
+      shell: pwsh
+      run: |
+        Invoke-WebRequest -Uri https://goatcorp.github.io/dalamud-distrib/latest.zip -OutFile dalamud.zip
+        Expand-Archive -Force dalamud.zip "$env:AppData\XIVLauncher\addon\Hooks\dev"
+
+    # 以 Pal.json 里的版本为准，最后一位 +1
+    - name: Bump version
+      run: |
+        cur=$(perl -0ne 'print $1 if /"InternalName":\s*"AutoPalExplorer".*?"AssemblyVersion":\s*"([^"]+)"/s' Pal/Pal.json)
+        [ -n "$cur" ] || { echo "Pal.json 里找不到 AutoPalExplorer 版本"; exit 1; }
+        new="${cur%.*}.$(( ${cur##*.} + 1 ))"
+        echo "$cur -> $new"
+        echo "VERSION=$new" >> "$GITHUB_ENV"
+
+    - name: Build
+      run: dotnet build AutoPalExplorer.sln -c Release -p:Version=$VERSION
+
+    - name: GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v${{ env.VERSION }}
+        name: v${{ env.VERSION }}
+        files: AutoPalExplorer/bin/Release/AutoPalExplorer/latest.zip
+
+    - name: Update Pal
+      working-directory: Pal
+      run: |
+        cp ../AutoPalExplorer/bin/Release/AutoPalExplorer/latest.zip AutoPalaceExplorer/latest.zip
+        perl -0pi.bak -e 's/("InternalName":\s*"AutoPalExplorer".*?"AssemblyVersion":\s*")[^"]+/${1}'"$VERSION"'/s' Pal.json
+        rm Pal.json.bak
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add AutoPalaceExplorer/latest.zip Pal.json
+        git commit -m "AutoPalExplorer $VERSION"
+        git push
